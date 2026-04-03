@@ -1,0 +1,33 @@
+[project]
+name = "face-recognition-app"
+version = "0.1.0"
+description = "Windows local face recognition playground built with uv and OpenCV DNN."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.2.0",
+]
+
+[project.scripts]
+face-recognition-app = "app.main:main"
+face-recognition-download-models = "app.infra.download_models:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.9",
+    "ty>=0.0.28",
+]
