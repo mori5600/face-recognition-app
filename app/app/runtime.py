@@ -15,6 +15,7 @@ from app.domain.states import (
     RegistrationState,
     UiState,
 )
+from app.domain.statuses import CameraStatus, MatchingStatus, RegistrationStatus
 from app.domain.value_objects import DisplayName, Distance, FaceEncoding, Timestamp
 from app.gateways.camera_gateway import (
     CameraHandle,
@@ -142,7 +143,7 @@ class FaceRecognitionRuntime:
             self._state,
             camera=replace(
                 self._state.camera,
-                status="stopped",
+                status=CameraStatus.STOPPED,
                 latest_frame=None,
                 detected_faces=(),
             ),
@@ -152,7 +153,11 @@ class FaceRecognitionRuntime:
         if self._camera_handle is not None:
             self._state = replace(
                 self._state,
-                camera=replace(self._state.camera, status="running", last_error=None),
+                camera=replace(
+                    self._state.camera,
+                    status=CameraStatus.RUNNING,
+                    last_error=None,
+                ),
                 ui=replace(self._state.ui, message="カメラは既に起動しています。"),
             )
             return Success(self._state)
@@ -163,7 +168,7 @@ class FaceRecognitionRuntime:
                 self._state,
                 camera=replace(
                     self._state.camera,
-                    status="error",
+                    status=CameraStatus.ERROR,
                     last_error=open_result.message,
                 ),
                 ui=replace(self._state.ui, message=open_result.message),
@@ -174,7 +179,11 @@ class FaceRecognitionRuntime:
         self._camera_handle = camera_handle
         self._state = replace(
             self._state,
-            camera=replace(self._state.camera, status="running", last_error=None),
+            camera=replace(
+                self._state.camera,
+                status=CameraStatus.RUNNING,
+                last_error=None,
+            ),
             ui=replace(self._state.ui, message="カメラを開始しました。"),
         )
         return Success(self._state)
@@ -185,7 +194,7 @@ class FaceRecognitionRuntime:
                 self._state,
                 camera=replace(
                     self._state.camera,
-                    status="stopped",
+                    status=CameraStatus.STOPPED,
                     latest_frame=None,
                     detected_faces=(),
                 ),
@@ -200,7 +209,7 @@ class FaceRecognitionRuntime:
                 self._state,
                 camera=replace(
                     self._state.camera,
-                    status="error",
+                    status=CameraStatus.ERROR,
                     latest_frame=None,
                     detected_faces=(),
                 ),
@@ -212,7 +221,7 @@ class FaceRecognitionRuntime:
             self._state,
             camera=replace(
                 self._state.camera,
-                status="stopped",
+                status=CameraStatus.STOPPED,
                 latest_frame=None,
                 detected_faces=(),
                 last_error=None,
@@ -231,7 +240,7 @@ class FaceRecognitionRuntime:
                 self._state,
                 camera=replace(
                     self._state.camera,
-                    status="error",
+                    status=CameraStatus.ERROR,
                     last_error=frame_result.message,
                 ),
                 ui=replace(self._state.ui, message=frame_result.message),
@@ -245,7 +254,7 @@ class FaceRecognitionRuntime:
                 self._state,
                 camera=replace(
                     self._state.camera,
-                    status="error",
+                    status=CameraStatus.ERROR,
                     latest_frame=frame,
                     last_error=face_result.message,
                 ),
@@ -257,7 +266,7 @@ class FaceRecognitionRuntime:
         self._state = replace(
             self._state,
             camera=CameraState(
-                status="running",
+                status=CameraStatus.RUNNING,
                 latest_frame=frame,
                 detected_faces=detected_faces,
                 last_error=None,
@@ -301,7 +310,7 @@ class FaceRecognitionRuntime:
                 people=PeopleState(persons=self._state.people.persons + (person,)),
                 registration=RegistrationState(
                     draft_name=display_name.value,
-                    status="success",
+                    status=RegistrationStatus.SUCCESS,
                     last_registered_person_id=person.person_id,
                     last_error=None,
                 ),
@@ -341,7 +350,7 @@ class FaceRecognitionRuntime:
             people=PeopleState(persons=updated_people),
             registration=RegistrationState(
                 draft_name=display_name.value,
-                status="success",
+                status=RegistrationStatus.SUCCESS,
                 last_registered_person_id=updated_person.person_id,
                 last_error=None,
             ),
@@ -376,7 +385,9 @@ class FaceRecognitionRuntime:
         self._state = replace(
             self._state,
             matching=MatchingState(
-                status="success", results=(result,), last_error=None
+                status=MatchingStatus.SUCCESS,
+                results=(result,),
+                last_error=None,
             ),
             ui=replace(
                 self._state.ui,
@@ -406,7 +417,11 @@ class FaceRecognitionRuntime:
         self._state = replace(
             self._state,
             people=PeopleState(persons=updated_people),
-            matching=MatchingState(status="idle", results=(), last_error=None),
+            matching=MatchingState(
+                status=MatchingStatus.IDLE,
+                results=(),
+                last_error=None,
+            ),
             ui=replace(
                 self._state.ui,
                 message=f"{selected_person.display_name.value} さんを削除しました。",
@@ -592,7 +607,7 @@ class FaceRecognitionRuntime:
             self._state,
             registration=RegistrationState(
                 draft_name=self._state.registration.draft_name,
-                status="error",
+                status=RegistrationStatus.ERROR,
                 last_registered_person_id=self._state.registration.last_registered_person_id,
                 last_error=message,
             ),
@@ -603,7 +618,11 @@ class FaceRecognitionRuntime:
     def _matching_failure(self, message: str) -> Result[AppState, AppError]:
         self._state = replace(
             self._state,
-            matching=MatchingState(status="error", results=(), last_error=message),
+            matching=MatchingState(
+                status=MatchingStatus.ERROR,
+                results=(),
+                last_error=message,
+            ),
             ui=replace(self._state.ui, message=message),
         )
         return Failure(AppError(message))

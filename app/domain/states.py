@@ -3,11 +3,12 @@ from dataclasses import dataclass, field
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.ids import PersonId
 from app.domain.raw_types import RawFrame
+from app.domain.statuses import CameraStatus, MatchingStatus, RegistrationStatus
 
 
 @dataclass(frozen=True)
 class CameraState:
-    status: str = "idle"
+    status: CameraStatus = CameraStatus.IDLE
     latest_frame: RawFrame | None = None
     detected_faces: tuple[DetectedFace, ...] = ()
     last_error: str | None = None
@@ -16,14 +17,14 @@ class CameraState:
 @dataclass(frozen=True)
 class RegistrationState:
     draft_name: str = ""
-    status: str = "idle"
+    status: RegistrationStatus = RegistrationStatus.IDLE
     last_registered_person_id: PersonId | None = None
     last_error: str | None = None
 
 
 @dataclass(frozen=True)
 class MatchingState:
-    status: str = "idle"
+    status: MatchingStatus = MatchingStatus.IDLE
     results: tuple[MatchResult, ...] = ()
     last_error: str | None = None
 

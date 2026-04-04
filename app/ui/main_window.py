@@ -6,6 +6,7 @@ from PIL import Image
 
 from app.app.runtime import FaceRecognitionRuntime
 from app.domain.results import is_failure, unwrap_success
+from app.domain.statuses import CameraStatus
 from app.ui.view_model import MainWindowViewModel, build_main_window_view_model
 
 PRIMARY_FONT_CANDIDATES = (
@@ -636,7 +637,10 @@ class MainWindow(ctk.CTk):
         self._tick_after_id = self.after(100, self._tick)
 
     def _tick(self) -> None:
-        if self._runtime is not None and self._runtime.state.camera.status == "running":
+        if (
+            self._runtime is not None
+            and self._runtime.state.camera.status == CameraStatus.RUNNING
+        ):
             self._runtime.update_frame()
         self._refresh_view()
         self._schedule_tick()
