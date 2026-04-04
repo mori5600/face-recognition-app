@@ -36,6 +36,22 @@ uv run face-recognition-app camera-check
 uv run face-recognition-app
 ```
 
+## 確認
+
+確認時は必ず次のスクリプトを実行します。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
+
+このスクリプトは次を順番に実行します。
+
+- `uv run pyright`
+- `uv run ty check .`
+- `uv run ruff check .`
+- `uv run pytest`
+- `uv run python -m compileall app main.py`
+
 ## 現時点の制約
 
 - 既定値は `SingleFaceOnlySelector` なので、複数人が映る場合は `最大顔優先` か `中央顔優先` に切り替えてください。

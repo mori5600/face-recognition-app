@@ -1,6 +1,8 @@
 {
   "include": [
-    "app"
+    "app",
+    "tests",
+    "main.py"
   ],
   "exclude": [
     ".venv",
@@ -8,14 +10,12 @@
   ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "standard",
+  "reportArgumentType": "error",
   "reportMissingTypeStubs": "none",
   "reportUnknownVariableType": "none",
   "reportUnknownMemberType": "none",
   "reportUnknownParameterType": "none",
   "reportUnknownArgumentType": "none",
-  "reportAny": "none",
-  "reportExplicitAny": "none",
-  "reportUnannotatedClassAttribute": "none",
   "reportUnusedCallResult": "none",
   "reportPrivateUsage": "none",
   "reportDeprecated": "none"

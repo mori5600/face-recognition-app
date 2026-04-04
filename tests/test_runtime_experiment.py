@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -232,8 +233,13 @@ class _StubLandmarker(FaceLandmarkerProtocol):
 
 
 class _StubLandmarkerResult(FaceLandmarkerResultProtocol):
-    face_landmarks: tuple[tuple["_StubLandmark", ...], ...] = ()
-    face_blendshapes: tuple[tuple["_StubCategory", ...], ...] = ()
+    @property
+    def face_landmarks(self) -> Sequence[Sequence[LandmarkProtocol]]:
+        return ()
+
+    @property
+    def face_blendshapes(self) -> Sequence[Sequence[LandmarkerCategoryProtocol]]:
+        return ()
 
 
 class _StubLandmark(LandmarkProtocol):

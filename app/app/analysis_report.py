@@ -603,12 +603,15 @@ def _add_threshold_sweep_traces(
 
     latest_threshold = sessions[-1].session.threshold if len(sessions) > 0 else None
     if latest_threshold is not None:
-        figure.add_vline(
-            x=latest_threshold,
-            line_color=PRIMARY_COLOR,
-            line_dash="dash",
-            annotation_text=f"直近の閾値 {latest_threshold:.3f}",
-            annotation_position="top right",
+        figure.add_trace(
+            go.Scatter(
+                x=[latest_threshold, latest_threshold],
+                y=[0.0, 1.0],
+                mode="lines",
+                name=f"直近の閾値 {latest_threshold:.3f}",
+                line={"color": PRIMARY_COLOR, "width": 2, "dash": "dash"},
+                hovertemplate="閾値 %{x:.3f}<extra></extra>",
+            ),
             row=1,
             col=2,
         )

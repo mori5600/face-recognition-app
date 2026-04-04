@@ -27,8 +27,11 @@ class LandmarkProtocol(Protocol):
 
 
 class FaceLandmarkerResultProtocol(Protocol):
-    face_landmarks: Sequence[Sequence[LandmarkProtocol]]
-    face_blendshapes: Sequence[Sequence[LandmarkerCategoryProtocol]]
+    @property
+    def face_landmarks(self) -> Sequence[Sequence[LandmarkProtocol]]: ...
+
+    @property
+    def face_blendshapes(self) -> Sequence[Sequence[LandmarkerCategoryProtocol]]: ...
 
 
 class FaceLandmarkerProtocol(Protocol):
