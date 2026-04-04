@@ -1,4 +1,3 @@
-import re
 import tkinter.font as tkfont
 
 import customtkinter as ctk
@@ -37,19 +36,9 @@ BORDER_SOFT = "#d1d5db"
 DANGER = "#9f1d1d"
 DANGER_HOVER = "#7f1d1d"
 DANGER_SOFT = "#fef2f2"
-STATUS_LABELS = {
-    "camera": "カメラ",
-    "faces": "検出顔",
-    "people": "登録人数",
-    "selector": "顔選択",
-    "matcher": "照合方式",
-    "threshold": "照合閾値",
-}
-CAMERA_STATUS_LABELS = {
-    "running": "稼働中",
-    "stopped": "停止中",
-    "error": "エラー",
-}
+SUCCESS = "#006D3C"
+SUCCESS_SOFT = "#E8F5EE"
+NEUTRAL_SOFT = "#F3F4F6"
 
 
 class MainWindow(ctk.CTk):
@@ -103,8 +92,8 @@ class MainWindow(ctk.CTk):
         self._preview_image = None
         self._tick_after_id = None
 
-        self._last_message_text = ""
-        self._last_status_lines = ()
+        self._last_phase_signature = ""
+        self._last_summary_text = ""
         self._last_people_lines = ()
         self._last_result_lines = ()
         self._last_face_selector_values = ()
@@ -212,7 +201,6 @@ class MainWindow(ctk.CTk):
         )
         self._header_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         self._header_frame.grid_columnconfigure(0, weight=1)
-        self._header_frame.grid_columnconfigure(1, weight=0)
 
         accent_bar = ctk.CTkFrame(
             self._header_frame,
@@ -220,12 +208,10 @@ class MainWindow(ctk.CTk):
             corner_radius=0,
             fg_color=ACCENT,
         )
-        accent_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        accent_bar.grid(row=0, column=0, sticky="ew")
 
         header_body = ctk.CTkFrame(self._header_frame, fg_color="transparent")
-        header_body.grid(row=1, column=0, columnspan=2, sticky="ew", padx=24, pady=12)
-        header_body.grid_columnconfigure(0, weight=1)
-        header_body.grid_columnconfigure(1, weight=0)
+        header_body.grid(row=1, column=0, sticky="ew", padx=24, pady=12)
 
         title_block = ctk.CTkFrame(header_body, fg_color="transparent")
         title_block.grid(row=0, column=0, sticky="w")
@@ -239,28 +225,6 @@ class MainWindow(ctk.CTk):
         )
         title.pack(anchor="w")
 
-        self._message_shell = ctk.CTkFrame(
-            header_body,
-            fg_color=CARD_BG,
-            corner_radius=8,
-            border_width=1,
-            border_color=BORDER_SOFT,
-        )
-        self._message_shell.grid(row=0, column=1, sticky="e", padx=(16, 0))
-
-        message_body = ctk.CTkFrame(self._message_shell, fg_color="transparent")
-        message_body.grid(row=0, column=0, sticky="nsew", padx=12, pady=8)
-
-        self._message_banner = ctk.CTkLabel(
-            message_body,
-            text="",
-            font=self._font_body,
-            text_color=TEXT_PRIMARY,
-            anchor="w",
-            wraplength=240,
-        )
-        self._message_banner.pack(anchor="w")
-
         self._preview_panel = ctk.CTkFrame(
             self,
             corner_radius=12,
@@ -271,7 +235,7 @@ class MainWindow(ctk.CTk):
         self._preview_panel.grid(
             row=1, column=0, sticky="nsew", padx=(24, 8), pady=(16, 24)
         )
-        self._preview_panel.grid_rowconfigure(1, weight=1)
+        self._preview_panel.grid_rowconfigure(2, weight=1)
         self._preview_panel.grid_columnconfigure(0, weight=1)
 
         preview_header = ctk.CTkFrame(self._preview_panel, fg_color="transparent")
@@ -287,6 +251,69 @@ class MainWindow(ctk.CTk):
         )
         preview_title.grid(row=0, column=0, sticky="w")
 
+        self._phase_panel = ctk.CTkFrame(
+            self._preview_panel,
+            corner_radius=10,
+            fg_color=CARD_ALT_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+        )
+        self._phase_panel.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        self._phase_panel.grid_columnconfigure(0, weight=1)
+
+        self._phase_badge = ctk.CTkLabel(
+            self._phase_panel,
+            text="待機中",
+            font=self._font_small,
+            text_color=ACCENT,
+            fg_color=ACCENT_SOFT,
+            corner_radius=8,
+            padx=10,
+            pady=4,
+        )
+        self._phase_badge.grid(row=0, column=0, sticky="w", padx=14, pady=(14, 6))
+
+        self._phase_title_label = ctk.CTkLabel(
+            self._phase_panel,
+            text="カメラを開始してください。",
+            font=self._font_section,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+        )
+        self._phase_title_label.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 4))
+
+        self._phase_detail_label = ctk.CTkLabel(
+            self._phase_panel,
+            text="開始後に顔を正面へ向けてください。",
+            font=self._font_body,
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=760,
+        )
+        self._phase_detail_label.grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=14,
+            pady=(0, 6),
+        )
+
+        self._phase_summary_label = ctk.CTkLabel(
+            self._phase_panel,
+            text="",
+            font=self._font_small,
+            text_color=TEXT_MUTED,
+            anchor="w",
+        )
+        self._phase_summary_label.grid(
+            row=3,
+            column=0,
+            sticky="w",
+            padx=14,
+            pady=(0, 14),
+        )
+
         self._preview_label = ctk.CTkLabel(
             self._preview_panel,
             text="カメラを開始するとプレビューが表示されます。",
@@ -296,7 +323,7 @@ class MainWindow(ctk.CTk):
             corner_radius=8,
             justify="center",
         )
-        self._preview_label.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 16))
+        self._preview_label.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 16))
 
         action_bar = ctk.CTkFrame(
             self._preview_panel,
@@ -305,7 +332,7 @@ class MainWindow(ctk.CTk):
             border_width=1,
             border_color=BORDER_SOFT,
         )
-        action_bar.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        action_bar.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
         action_bar.grid_columnconfigure(0, weight=1)
         action_bar.grid_columnconfigure(1, weight=1)
         action_bar.grid_columnconfigure(2, weight=1)
@@ -401,50 +428,6 @@ class MainWindow(ctk.CTk):
         )
         self._dashboard_panel.grid_columnconfigure(0, weight=1)
 
-        self._status_card = ctk.CTkFrame(
-            self._dashboard_panel,
-            corner_radius=10,
-            fg_color=CARD_BG,
-            border_width=1,
-            border_color=BORDER_SOFT,
-        )
-        self._status_card.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
-        self._status_card.grid_columnconfigure((0, 1), weight=1)
-
-        self._status_value_labels = []
-        for index in range(6):
-            cell = ctk.CTkFrame(
-                self._status_card,
-                fg_color=CARD_ALT_BG,
-                corner_radius=8,
-                border_width=0,
-            )
-            row = index // 2
-            column = index % 2
-            cell.grid(row=row, column=column, sticky="ew", padx=8, pady=8)
-            cell.grid_columnconfigure(0, weight=1)
-
-            key_label = ctk.CTkLabel(
-                cell,
-                text="-",
-                font=self._font_small,
-                text_color=ACCENT,
-                anchor="w",
-            )
-            key_label.grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
-
-            value_label = ctk.CTkLabel(
-                cell,
-                text="-",
-                font=self._font_body,
-                text_color=TEXT_PRIMARY,
-                anchor="w",
-                justify="left",
-                wraplength=120,
-            )
-            value_label.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 8))
-            self._status_value_labels.append((key_label, value_label))
-
         settings_card = ctk.CTkFrame(
             self._dashboard_panel,
             corner_radius=10,
@@ -520,6 +503,54 @@ class MainWindow(ctk.CTk):
         )
         self._threshold_apply_button.grid(row=0, column=1, sticky="ew")
 
+        result_card = ctk.CTkFrame(
+            self._dashboard_panel,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+        )
+        result_card.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
+        result_card.grid_columnconfigure(0, weight=1)
+
+        self._result_badge = ctk.CTkLabel(
+            result_card,
+            text="待機中",
+            font=self._font_small,
+            text_color=ACCENT,
+            fg_color=ACCENT_SOFT,
+            corner_radius=8,
+            padx=10,
+            pady=4,
+        )
+        self._result_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+
+        self._result_primary_label = ctk.CTkLabel(
+            result_card,
+            text="まだ照合していません。",
+            font=self._font_body,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._result_primary_label.grid(
+            row=1, column=0, sticky="nw", padx=12, pady=(0, 4)
+        )
+
+        self._result_detail_label = ctk.CTkLabel(
+            result_card,
+            text="",
+            font=self._font_small,
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._result_detail_label.grid(
+            row=2, column=0, sticky="nw", padx=12, pady=(0, 12)
+        )
+
         lower_grid = ctk.CTkFrame(self._dashboard_panel, fg_color="transparent")
         lower_grid.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 16))
         lower_grid.grid_columnconfigure(0, weight=1)
@@ -579,54 +610,6 @@ class MainWindow(ctk.CTk):
         self._people_list.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         self._people_list.grid_columnconfigure(0, weight=1)
 
-        result_card = ctk.CTkFrame(
-            lower_grid,
-            corner_radius=10,
-            fg_color=CARD_BG,
-            border_width=1,
-            border_color=BORDER_SOFT,
-        )
-        result_card.grid(row=1, column=0, sticky="ew")
-        result_card.grid_columnconfigure(0, weight=1)
-
-        self._result_badge = ctk.CTkLabel(
-            result_card,
-            text="待機中",
-            font=self._font_small,
-            text_color=ACCENT,
-            fg_color=ACCENT_SOFT,
-            corner_radius=8,
-            padx=10,
-            pady=4,
-        )
-        self._result_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-
-        self._result_primary_label = ctk.CTkLabel(
-            result_card,
-            text="まだ照合していません。",
-            font=self._font_body,
-            text_color=TEXT_PRIMARY,
-            anchor="w",
-            justify="left",
-            wraplength=240,
-        )
-        self._result_primary_label.grid(
-            row=1, column=0, sticky="nw", padx=12, pady=(0, 6)
-        )
-
-        self._result_detail_label = ctk.CTkLabel(
-            result_card,
-            text="カメラを向けて照合を実行してください。",
-            font=self._font_body,
-            text_color=TEXT_MUTED,
-            anchor="w",
-            justify="left",
-            wraplength=240,
-        )
-        self._result_detail_label.grid(
-            row=2, column=0, sticky="nw", padx=12, pady=(0, 12)
-        )
-
     def _require_runtime(self) -> FaceRecognitionRuntime:
         runtime = self._runtime
         if runtime is None:
@@ -676,14 +659,21 @@ class MainWindow(ctk.CTk):
         self._preview_label._label.configure(image="")
 
     def _refresh_metadata(self, view_model: MainWindowViewModel) -> None:
-        message_text = view_model.message
-        if message_text != self._last_message_text:
-            self._message_banner.configure(text=message_text)
-            self._last_message_text = message_text
+        phase_signature = "|".join(
+            (
+                view_model.phase_badge_text,
+                view_model.phase_tone,
+                view_model.phase_title,
+                view_model.phase_detail,
+            )
+        )
+        if phase_signature != self._last_phase_signature:
+            self._render_phase(view_model)
+            self._last_phase_signature = phase_signature
 
-        if view_model.status_lines != self._last_status_lines:
-            self._render_status_cards(view_model.status_lines)
-            self._last_status_lines = view_model.status_lines
+        if view_model.summary_text != self._last_summary_text:
+            self._phase_summary_label.configure(text=view_model.summary_text)
+            self._last_summary_text = view_model.summary_text
 
         if view_model.people_lines != self._last_people_lines:
             self._render_people_list(view_model.people_lines)
@@ -734,30 +724,27 @@ class MainWindow(ctk.CTk):
             )
             self._last_delete_enabled = view_model.can_delete_person
 
-    def _render_status_cards(self, status_lines: tuple[str, ...]) -> None:
-        normalized = list(status_lines)
-        while len(normalized) < len(self._status_value_labels):
-            normalized.append("-=-")
+    def _render_phase(self, view_model: MainWindowViewModel) -> None:
+        badge_fg, badge_text_color, panel_border = self._phase_colors(
+            view_model.phase_tone
+        )
+        self._phase_panel.configure(border_color=panel_border)
+        self._phase_badge.configure(
+            text=view_model.phase_badge_text,
+            fg_color=badge_fg,
+            text_color=badge_text_color,
+        )
+        self._phase_title_label.configure(text=view_model.phase_title)
+        self._phase_detail_label.configure(text=view_model.phase_detail)
 
-        for index, status_line in enumerate(
-            normalized[: len(self._status_value_labels)]
-        ):
-            key_label, value_label = self._status_value_labels[index]
-            if "=" in status_line:
-                key, value = status_line.split("=", 1)
-            else:
-                key, value = "info", status_line
-            key_label.configure(text=STATUS_LABELS.get(key, key.upper()))
-            value_label.configure(text=self._format_status_value(key, value))
-
-    def _format_status_value(self, key: str, value: str) -> str:
-        if key == "camera":
-            return CAMERA_STATUS_LABELS.get(value, value)
-        if key == "faces":
-            return f"{value} 件"
-        if key == "people":
-            return f"{value} 人"
-        return value
+    def _phase_colors(self, tone: str) -> tuple[str, str, str]:
+        if tone == "success":
+            return (SUCCESS_SOFT, SUCCESS, SUCCESS)
+        if tone == "danger":
+            return (DANGER_SOFT, DANGER, DANGER)
+        if tone == "info":
+            return (ACCENT_SOFT, ACCENT, ACCENT)
+        return (NEUTRAL_SOFT, TEXT_PRIMARY, BORDER_SOFT)
 
     def _render_people_list(self, people_lines: tuple[str, ...]) -> None:
         for child in self._people_list.winfo_children():
@@ -855,9 +842,7 @@ class MainWindow(ctk.CTk):
                 text_color=ACCENT,
             )
             self._result_primary_label.configure(text="まだ照合していません。")
-            self._result_detail_label.configure(
-                text="カメラを向けて照合を実行してください。"
-            )
+            self._result_detail_label.configure(text="")
             return
 
         primary_text = result_lines[0]
@@ -878,11 +863,11 @@ class MainWindow(ctk.CTk):
 
     def _result_badge_style(self, primary_text: str) -> tuple[str, str, str]:
         if primary_text.startswith("一致:"):
-            return ("一致", ACCENT, CARD_BG)
+            return ("一致", SUCCESS, CARD_BG)
         if primary_text.startswith("不一致:"):
-            return ("不一致", CARD_ALT_BG, TEXT_PRIMARY)
+            return ("不一致", NEUTRAL_SOFT, TEXT_PRIMARY)
         if "登録済みの人物がいません" in primary_text:
-            return ("未登録", CARD_ALT_BG, TEXT_PRIMARY)
+            return ("未登録", NEUTRAL_SOFT, TEXT_PRIMARY)
         return ("情報", ACCENT_SOFT, ACCENT)
 
     def _result_primary_text(self, primary_text: str) -> str:
@@ -892,23 +877,9 @@ class MainWindow(ctk.CTk):
         return primary_text
 
     def _result_detail_text(self, primary_text: str) -> str:
-        match = re.search(r"distance=([0-9.]+)", primary_text)
-        if primary_text.startswith("一致:"):
-            if match is not None:
-                return (
-                    f"最も近い登録データとの距離は {match.group(1)} です。"
-                    " 現在の閾値以下のため一致と判定しました。"
-                )
-            return "現在の閾値以下のため一致と判定しました。"
-        if primary_text.startswith("不一致:"):
-            if match is not None:
-                return (
-                    f"最も近い候補との距離は {match.group(1)} です。"
-                    " 現在の閾値を超えているため不一致です。"
-                )
-            return "最も近い候補でも現在の閾値を超えています。"
-        if "登録済みの人物がいません" in primary_text:
-            return "先に顔を登録すると照合できるようになります。"
+        if "distance=" in primary_text:
+            distance_text = primary_text.split("distance=", 1)[1].rstrip(")")
+            return f"distance {distance_text}"
         return ""
 
     def _fit_preview_image(self, image: Image.Image) -> Image.Image:

@@ -10,6 +10,7 @@ class AppPaths:
     database_path: Path
     yunet_model_path: Path
     sface_model_path: Path
+    mediapipe_face_landmarker_path: Path
     sqlite_schema_path: Path
 
     @classmethod
@@ -24,5 +25,6 @@ class AppPaths:
             database_path=data_dir / "people.db",
             yunet_model_path=models_dir / "face_detection_yunet_2023mar.onnx",
             sface_model_path=models_dir / "face_recognition_sface_2021dec.onnx",
+            mediapipe_face_landmarker_path=models_dir / "face_landmarker.task",
             sqlite_schema_path=root_dir / "app" / "infra" / "sqlite_schema.sql",
         )

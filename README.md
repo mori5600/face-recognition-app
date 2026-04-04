@@ -1,6 +1,6 @@
 # Face Recognition App
 
-Windows ローカル専用の顔認証アプリの土台です。依存管理は `uv`、顔検出と特徴抽出は `OpenCV DNN (YuNet + SFace)` を前提にしています。
+Windows ローカル専用の顔認証アプリです。依存管理は `uv`、顔検出と特徴抽出は `OpenCV DNN (YuNet + SFace)`、写真突破を下げる生体確認は `MediaPipe Face Landmarker` を前提にしています。
 
 ## セットアップ
 
@@ -15,11 +15,13 @@ uv run face-recognition-app
 
 - `uv` ベースの依存管理
 - `OpenCV FaceDetectorYN / FaceRecognizerSF` のロード確認
+- `MediaPipe Face Landmarker` を使った challenge-response 生体確認
 - 公式 ONNX モデルのダウンロード導線
 - カメラ 1 フレーム取得確認コマンド
 - SQLite 永続化
 - 名前入力による顔登録
 - 既登録人物との顔照合
+- 登録・照合の直前に 2 ステップの生体確認
 - 顔選択方式の切り替え
 - 照合方式と閾値の切り替え
 - 登録済み人物の選択と削除
@@ -41,3 +43,4 @@ uv run face-recognition-app
 - `人物単位最近傍` は、同一人物の複数 encoding の平均距離で評価する実装です。
 - `FaceEncoding` は設計書に合わせて 128 次元固定です。
 - カメラフレームごとに顔検出と特徴抽出を行うため、PC 性能によってはプレビューが重くなります。
+- 生体確認は RGB カメラ前提の簡易 PAD です。写真には強くなりますが、厳密な本人確認を保証するものではありません。

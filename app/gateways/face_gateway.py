@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-import cv2
 import numpy as np
 
 from app.domain.entities import DetectedFace
@@ -12,6 +10,13 @@ from app.domain.raw_types import RawFrame
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
 from app.domain.value_objects import BoundingBox, Distance, FaceEncoding
 from app.infra.app_paths import AppPaths
+from app.infra.cv2_compat import (
+    FR_NORM_L2,
+    FaceDetectorProtocol,
+    FaceRecognizerProtocol,
+    create_face_detector,
+    create_face_recognizer,
+)
 
 
 @dataclass(frozen=True)
@@ -33,8 +38,8 @@ class OpenCvFaceEngineConfig:
 
 @dataclass
 class OpenCvFaceEngine:
-    detector: Any
-    recognizer: Any
+    detector: FaceDetectorProtocol
+    recognizer: FaceRecognizerProtocol
 
 
 def load_face_engine(
@@ -50,7 +55,7 @@ def load_face_engine(
         )
 
     try:
-        detector = cv2.FaceDetectorYN.create(
+        detector = create_face_detector(
             str(config.yunet_model_path),
             "",
             config.input_size,
@@ -58,9 +63,9 @@ def load_face_engine(
             config.nms_threshold,
             config.top_k,
         )
-        recognizer = cv2.FaceRecognizerSF.create(str(config.sface_model_path), "")
+        recognizer = create_face_recognizer(str(config.sface_model_path), "")
         return Success(OpenCvFaceEngine(detector=detector, recognizer=recognizer))
-    except cv2.error as exc:
+    except Exception as exc:
         return Failure(InfraError(f"Failed to load OpenCV DNN models: {exc}"))
 
 
@@ -76,19 +81,20 @@ def detect_faces(
 
     try:
         _, faces = engine.detector.detect(frame)
-    except cv2.error as exc:
+    except Exception as exc:
         return Failure(InfraError(f"Face detection failed: {exc}"))
 
     if faces is None:
         empty_faces: tuple[DetectedFace, ...] = ()
         return Success(empty_faces)
 
+    faces_array = np.asarray(faces)
     detected_faces: list[DetectedFace] = []
-    for face_row in faces:
+    for face_row in faces_array:
         try:
             aligned_face = engine.recognizer.alignCrop(frame, face_row)
             feature = engine.recognizer.feature(aligned_face)
-        except cv2.error as exc:
+        except Exception as exc:
             return Failure(InfraError(f"Face feature extraction failed: {exc}"))
 
         left = int(round(face_row[0]))
@@ -130,9 +136,9 @@ def compare_distance(
         raw_distance = engine.recognizer.match(
             a.to_row_vector(),
             b.to_row_vector(),
-            cv2.FaceRecognizerSF_FR_NORM_L2,
+            FR_NORM_L2,
         )
-    except cv2.error as exc:
+    except Exception as exc:
         return Failure(InfraError(f"Face distance comparison failed: {exc}"))
 
     distance_result = Distance.create(float(raw_distance))

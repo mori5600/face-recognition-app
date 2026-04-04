@@ -22,6 +22,10 @@ MODEL_SOURCES = {
         url="https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx?download=true",
         expected_size=38696353,
     ),
+    "face_landmarker.task": ModelSource(
+        url="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+        expected_size=3758596,
+    ),
 }
 
 

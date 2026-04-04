@@ -4,6 +4,11 @@ from app.app.commands import (
     DownloadModelsCommand,
     UiCommand,
 )
+from app.gateways.liveness_gateway import (
+    MediaPipeLivenessEngineConfig,
+    close_liveness_engine,
+    load_liveness_engine,
+)
 from app.gateways.camera_gateway import close_camera, open_camera, read_frame
 from app.gateways.face_gateway import OpenCvFaceEngineConfig, load_face_engine
 from app.gateways.sqlite_gateway import initialize_database, load_people
@@ -19,6 +24,7 @@ def handle_doctor(_: DoctorCommand) -> int:
     print(f"Database:      {paths.database_path}")
     print(f"YuNet model:   {paths.yunet_model_path}")
     print(f"SFace model:   {paths.sface_model_path}")
+    print(f"Liveness:      {paths.mediapipe_face_landmarker_path}")
 
     database_result = initialize_database(paths)
     if is_failure(database_result):
@@ -33,14 +39,25 @@ def handle_doctor(_: DoctorCommand) -> int:
         )
         return 1
 
+    liveness_result = load_liveness_engine(
+        MediaPipeLivenessEngineConfig(paths.mediapipe_face_landmarker_path)
+    )
+    if is_failure(liveness_result):
+        print(f"[ERROR] {liveness_result.message}")
+        return 1
+    liveness_engine = unwrap_success(liveness_result)
+
     people_result = load_people(paths)
     if is_failure(people_result):
         print(f"[ERROR] {people_result.message}")
+        close_liveness_engine(liveness_engine)
         return 1
     people = unwrap_success(people_result)
 
     print("[OK] OpenCV FaceDetectorYN and FaceRecognizerSF loaded successfully.")
+    print("[OK] MediaPipe Face Landmarker loaded successfully.")
     print(f"[OK] Loaded {len(people.persons)} registered people from SQLite.")
+    close_liveness_engine(liveness_engine)
     return 0
 
 

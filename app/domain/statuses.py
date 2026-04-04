@@ -18,3 +18,11 @@ class MatchingStatus(StrEnum):
     IDLE = "idle"
     SUCCESS = "success"
     ERROR = "error"
+
+
+class LivenessStatus(StrEnum):
+    IDLE = "idle"
+    CHALLENGE = "challenge"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    EXPIRED = "expired"

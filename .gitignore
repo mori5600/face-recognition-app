@@ -12,3 +12,4 @@ wheels/
 # App runtime artifacts
 data/*.db
 models/*.onnx
+models/*.task

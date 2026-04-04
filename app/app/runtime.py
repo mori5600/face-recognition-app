@@ -1,21 +1,28 @@
 from dataclasses import replace
+import time
 
-import cv2
 import numpy as np
 
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.errors import AppError, DomainError
 from app.domain.ids import PersonId
+from app.domain.liveness import LivenessChallengeStep
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
 from app.domain.states import (
     AppState,
     CameraState,
+    LivenessState,
     MatchingState,
     PeopleState,
     RegistrationState,
     UiState,
 )
-from app.domain.statuses import CameraStatus, MatchingStatus, RegistrationStatus
+from app.domain.statuses import (
+    CameraStatus,
+    LivenessStatus,
+    MatchingStatus,
+    RegistrationStatus,
+)
 from app.domain.value_objects import DisplayName, Distance, FaceEncoding, Timestamp
 from app.gateways.camera_gateway import (
     CameraHandle,
@@ -30,6 +37,13 @@ from app.gateways.face_gateway import (
     detect_faces,
     load_face_engine,
 )
+from app.gateways.liveness_gateway import (
+    MediaPipeLivenessEngine,
+    MediaPipeLivenessEngineConfig,
+    close_liveness_engine,
+    detect_liveness_signals,
+    load_liveness_engine,
+)
 from app.gateways.sqlite_gateway import (
     delete_person,
     initialize_database,
@@ -39,11 +53,22 @@ from app.gateways.sqlite_gateway import (
     update_person_updated_at,
 )
 from app.infra.app_paths import AppPaths
+from app.infra.cv2_compat import (
+    FONT_HERSHEY_SIMPLEX,
+    LINE_AA,
+    convert_bgr_to_rgb,
+    draw_rectangle,
+    put_text,
+)
 from app.infra.download_models import MODEL_SOURCES, download_models
 from app.strategy.face_selection import (
     CenterFaceSelector,
     LargestFaceSelector,
     SingleFaceOnlySelector,
+)
+from app.strategy.liveness import (
+    create_liveness_challenge_steps,
+    evaluate_liveness_step,
 )
 from app.strategy.matching import (
     MatchingThreshold,
@@ -65,6 +90,8 @@ MATCHING_MODE_LABELS = {
 MATCHING_MODE_BY_LABEL = {label: key for key, label in MATCHING_MODE_LABELS.items()}
 
 DEFAULT_MATCHING_THRESHOLD = 1.128
+LIVENESS_TIMEOUT_MS = 8_000
+LIVENESS_VERIFIED_WINDOW_MS = 8_000
 
 
 class FaceRecognitionRuntime:
@@ -72,10 +99,12 @@ class FaceRecognitionRuntime:
         self,
         paths: AppPaths,
         face_engine: OpenCvFaceEngine,
+        liveness_engine: MediaPipeLivenessEngine,
         initial_state: AppState,
     ) -> None:
         self._paths = paths
         self._face_engine = face_engine
+        self._liveness_engine = liveness_engine
         self._state = initial_state
         self._camera_handle: CameraHandle | None = None
         self._face_selector_key = "single"
@@ -110,9 +139,18 @@ class FaceRecognitionRuntime:
         )
         if is_failure(engine_result):
             return Failure(AppError(engine_result.message))
+        face_engine = unwrap_success(engine_result)
+
+        liveness_result = load_liveness_engine(
+            MediaPipeLivenessEngineConfig(resolved_paths.mediapipe_face_landmarker_path)
+        )
+        if is_failure(liveness_result):
+            return Failure(AppError(liveness_result.message))
+        liveness_engine = unwrap_success(liveness_result)
 
         people_result = load_people(resolved_paths)
         if is_failure(people_result):
+            close_liveness_engine(liveness_engine)
             return Failure(AppError(people_result.message))
         people = unwrap_success(people_result)
 
@@ -126,19 +164,19 @@ class FaceRecognitionRuntime:
                 selected_person_id=selected_person_id,
             ),
         )
-        engine = unwrap_success(engine_result)
         runtime: FaceRecognitionRuntime = cls(
             paths=resolved_paths,
-            face_engine=engine,
+            face_engine=face_engine,
+            liveness_engine=liveness_engine,
             initial_state=initial_state,
         )
         return Success(runtime)
 
     def shutdown(self) -> None:
-        if self._camera_handle is None:
-            return
-        close_camera(self._camera_handle)
-        self._camera_handle = None
+        if self._camera_handle is not None:
+            close_camera(self._camera_handle)
+            self._camera_handle = None
+        close_liveness_engine(self._liveness_engine)
         self._state = replace(
             self._state,
             camera=replace(
@@ -147,6 +185,7 @@ class FaceRecognitionRuntime:
                 latest_frame=None,
                 detected_faces=(),
             ),
+            liveness=_idle_liveness_state(),
         )
 
     def start_camera(self, camera_index: int = 0) -> Result[AppState, AppError]:
@@ -184,6 +223,7 @@ class FaceRecognitionRuntime:
                 status=CameraStatus.RUNNING,
                 last_error=None,
             ),
+            liveness=_idle_liveness_state(),
             ui=replace(self._state.ui, message="カメラを開始しました。"),
         )
         return Success(self._state)
@@ -198,6 +238,7 @@ class FaceRecognitionRuntime:
                     latest_frame=None,
                     detected_faces=(),
                 ),
+                liveness=_idle_liveness_state(),
                 ui=replace(self._state.ui, message="カメラは停止中です。"),
             )
             return Success(self._state)
@@ -226,6 +267,7 @@ class FaceRecognitionRuntime:
                 detected_faces=(),
                 last_error=None,
             ),
+            liveness=_idle_liveness_state(),
             ui=replace(self._state.ui, message="カメラを停止しました。"),
         )
         return Success(self._state)
@@ -263,6 +305,34 @@ class FaceRecognitionRuntime:
             return Failure(AppError(face_result.message))
         detected_faces = unwrap_success(face_result)
 
+        liveness_state = self._state.liveness
+        next_message: str | None = None
+
+        if (
+            liveness_state.status is LivenessStatus.VERIFIED
+            and _liveness_verification_expired(liveness_state, _now_ms())
+        ):
+            liveness_state = replace(
+                liveness_state,
+                status=LivenessStatus.EXPIRED,
+                challenge_steps=(),
+                current_step_index=0,
+                neutral_ready=False,
+                verified_until_ms=None,
+            )
+
+        if self._state.liveness.status is LivenessStatus.CHALLENGE:
+            liveness_result = self._advance_liveness_challenge(frame, detected_faces)
+            if is_failure(liveness_result):
+                liveness_state = LivenessState(
+                    status=LivenessStatus.FAILED,
+                    requested_action=self._state.liveness.requested_action,
+                    last_error=liveness_result.message,
+                )
+                next_message = liveness_result.message
+            else:
+                liveness_state, next_message = unwrap_success(liveness_result)
+
         self._state = replace(
             self._state,
             camera=CameraState(
@@ -270,6 +340,12 @@ class FaceRecognitionRuntime:
                 latest_frame=frame,
                 detected_faces=detected_faces,
                 last_error=None,
+            ),
+            liveness=liveness_state,
+            ui=(
+                replace(self._state.ui, message=next_message)
+                if next_message is not None
+                else self._state.ui
             ),
         )
         return Success(self._state)
@@ -284,6 +360,10 @@ class FaceRecognitionRuntime:
         if is_failure(face_result):
             return self._registration_failure(face_result.message)
         selected_face = unwrap_success(face_result)
+
+        liveness_result = self._ensure_liveness_verified("登録")
+        if is_failure(liveness_result):
+            return Failure(AppError(liveness_result.message))
 
         now = Timestamp.now()
         existing_person = self._find_person_by_name(display_name.value)
@@ -314,6 +394,7 @@ class FaceRecognitionRuntime:
                     last_registered_person_id=person.person_id,
                     last_error=None,
                 ),
+                liveness=_idle_liveness_state(),
                 ui=replace(
                     self._state.ui,
                     message=f"{person.display_name.value} さんを新規登録しました。",
@@ -354,6 +435,7 @@ class FaceRecognitionRuntime:
                 last_registered_person_id=updated_person.person_id,
                 last_error=None,
             ),
+            liveness=_idle_liveness_state(),
             ui=replace(
                 self._state.ui,
                 message=f"{updated_person.display_name.value} さんに特徴量を追加しました。",
@@ -367,6 +449,10 @@ class FaceRecognitionRuntime:
         if is_failure(face_result):
             return self._matching_failure(face_result.message)
         selected_face = unwrap_success(face_result)
+
+        liveness_result = self._ensure_liveness_verified("照合")
+        if is_failure(liveness_result):
+            return Failure(AppError(liveness_result.message))
 
         match_result = self._current_matcher().match(
             selected_face,
@@ -389,6 +475,7 @@ class FaceRecognitionRuntime:
                 results=(result,),
                 last_error=None,
             ),
+            liveness=_idle_liveness_state(),
             ui=replace(
                 self._state.ui,
                 message=_build_match_message(result),
@@ -443,7 +530,7 @@ class FaceRecognitionRuntime:
                 if detected_face.face_id == selected_face_id
                 else (247, 196, 31)
             )
-            cv2.rectangle(
+            draw_rectangle(
                 annotated,
                 (detected_face.bounding_box.left, detected_face.bounding_box.top),
                 (detected_face.bounding_box.right, detected_face.bounding_box.bottom),
@@ -457,18 +544,18 @@ class FaceRecognitionRuntime:
             else None
         )
         if latest_match is not None and latest_match.candidate is not None:
-            cv2.putText(
+            put_text(
                 annotated,
                 _build_match_message(latest_match),
                 (16, 32),
-                cv2.FONT_HERSHEY_SIMPLEX,
+                FONT_HERSHEY_SIMPLEX,
                 0.8,
                 (255, 255, 255),
                 2,
-                cv2.LINE_AA,
+                LINE_AA,
             )
 
-        return cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+        return convert_bgr_to_rgb(annotated)
 
     def people_lines(self) -> tuple[str, ...]:
         if len(self._state.people.persons) == 0:
@@ -495,9 +582,9 @@ class FaceRecognitionRuntime:
             f"camera={self._state.camera.status}",
             f"faces={len(self._state.camera.detected_faces)}",
             f"people={len(self._state.people.persons)}",
-            f"selector={FACE_SELECTOR_LABELS[self._face_selector_key]}",
-            f"matcher={MATCHING_MODE_LABELS[self._matching_mode_key]}",
-            f"threshold={self._matching_threshold:.3f}",
+            f"liveness={self._state.liveness.status}",
+            f"challenge={self._liveness_status_summary()}",
+            f"grant={self._liveness_grant_summary()}",
         )
 
     def can_target_face(self) -> bool:
@@ -669,6 +756,142 @@ class FaceRecognitionRuntime:
         distance = unwrap_success(distance_result)
         return Success(distance)
 
+    def _ensure_liveness_verified(self, action_label: str) -> Result[None, AppError]:
+        now_ms = _now_ms()
+        liveness_state = self._state.liveness
+
+        if (
+            liveness_state.status is LivenessStatus.VERIFIED
+            and not _liveness_verification_expired(
+                liveness_state,
+                now_ms,
+            )
+        ):
+            return Success(None)
+
+        if liveness_state.status is not LivenessStatus.CHALLENGE:
+            liveness_state = self._begin_liveness_challenge(action_label, now_ms)
+        message = _build_liveness_message(liveness_state)
+        self._state = replace(
+            self._state,
+            liveness=liveness_state,
+            ui=replace(self._state.ui, message=message),
+        )
+        return Failure(AppError(message))
+
+    def _begin_liveness_challenge(
+        self,
+        action_label: str,
+        now_ms: int,
+    ) -> LivenessState:
+        return LivenessState(
+            status=LivenessStatus.CHALLENGE,
+            requested_action=action_label,
+            challenge_steps=create_liveness_challenge_steps(),
+            current_step_index=0,
+            neutral_ready=False,
+            started_at_ms=now_ms,
+            verified_until_ms=None,
+            last_error=None,
+        )
+
+    def _advance_liveness_challenge(
+        self,
+        frame: np.ndarray,
+        detected_faces: tuple[DetectedFace, ...],
+    ) -> Result[tuple[LivenessState, str | None], AppError]:
+        current = self._state.liveness
+        if current.status is not LivenessStatus.CHALLENGE:
+            return Success((current, None))
+
+        now_ms = _now_ms()
+        if (
+            current.started_at_ms is not None
+            and now_ms - current.started_at_ms > LIVENESS_TIMEOUT_MS
+        ):
+            failed_state = LivenessState(
+                status=LivenessStatus.FAILED,
+                requested_action=current.requested_action,
+                last_error="生体確認がタイムアウトしました。もう一度操作してください。",
+            )
+            return Success((failed_state, failed_state.last_error))
+
+        if len(detected_faces) != 1:
+            return Success((current, None))
+
+        signal_result = detect_liveness_signals(self._liveness_engine, frame, now_ms)
+        if is_failure(signal_result):
+            return Failure(AppError(signal_result.message))
+        signals = unwrap_success(signal_result)
+
+        active_step = _active_liveness_step(current)
+        if active_step is None:
+            return Success((current, None))
+
+        step_progress = evaluate_liveness_step(
+            active_step,
+            signals,
+            current.neutral_ready,
+        )
+        if not step_progress.completed:
+            if step_progress.neutral_ready == current.neutral_ready:
+                return Success((current, None))
+            return Success(
+                (
+                    replace(current, neutral_ready=step_progress.neutral_ready),
+                    None,
+                )
+            )
+
+        next_step_index = current.current_step_index + 1
+        if next_step_index >= len(current.challenge_steps):
+            verified_state = replace(
+                current,
+                status=LivenessStatus.VERIFIED,
+                current_step_index=next_step_index,
+                neutral_ready=False,
+                verified_until_ms=now_ms + LIVENESS_VERIFIED_WINDOW_MS,
+                last_error=None,
+            )
+            return Success(
+                (verified_state, "生体確認が完了しました。登録または照合を実行してください。")
+            )
+
+        next_state = replace(
+            current,
+            current_step_index=next_step_index,
+            neutral_ready=False,
+            last_error=None,
+        )
+        return Success((next_state, _build_liveness_message(next_state)))
+
+    def _liveness_status_summary(self) -> str:
+        if self._state.liveness.status is LivenessStatus.CHALLENGE:
+            step = _active_liveness_step(self._state.liveness)
+            if step is None:
+                return "確認中"
+            return f"{self._state.liveness.current_step_index + 1}/{len(self._state.liveness.challenge_steps)}"
+        if self._state.liveness.status is LivenessStatus.VERIFIED:
+            return "通過済み"
+        if self._state.liveness.status is LivenessStatus.FAILED:
+            return "失敗"
+        if self._state.liveness.status is LivenessStatus.EXPIRED:
+            return "期限切れ"
+        return "未実行"
+
+    def _liveness_grant_summary(self) -> str:
+        if (
+            self._state.liveness.status is LivenessStatus.VERIFIED
+            and not _liveness_verification_expired(
+                self._state.liveness,
+                _now_ms(),
+            )
+        ):
+            return "操作可"
+        if self._state.liveness.status is LivenessStatus.CHALLENGE:
+            return "確認中"
+        return "未確認"
+
 
 def _models_need_download(paths: AppPaths) -> bool:
     file_sizes = {
@@ -677,6 +900,9 @@ def _models_need_download(paths: AppPaths) -> bool:
         else -1,
         paths.sface_model_path.name: paths.sface_model_path.stat().st_size
         if paths.sface_model_path.exists()
+        else -1,
+        paths.mediapipe_face_landmarker_path.name: paths.mediapipe_face_landmarker_path.stat().st_size
+        if paths.mediapipe_face_landmarker_path.exists()
         else -1,
     }
     for file_name, source in MODEL_SOURCES.items():
@@ -692,3 +918,36 @@ def _build_match_message(result: MatchResult) -> str:
     if result.matched:
         return f"一致: {result.candidate.display_name.value} (distance={distance:.3f})"
     return f"不一致: 最も近い候補は {result.candidate.display_name.value} (distance={distance:.3f})"
+
+
+def _active_liveness_step(
+    state: LivenessState,
+) -> LivenessChallengeStep | None:
+    if state.current_step_index >= len(state.challenge_steps):
+        return None
+    return state.challenge_steps[state.current_step_index]
+
+
+def _build_liveness_message(state: LivenessState) -> str:
+    active_step = _active_liveness_step(state)
+    if active_step is None:
+        return "生体確認を実行してください。"
+
+    return (
+        f"生体確認 {state.current_step_index + 1}/{len(state.challenge_steps)}: "
+        f"{active_step.instruction}"
+    )
+
+
+def _idle_liveness_state() -> LivenessState:
+    return LivenessState(status=LivenessStatus.IDLE)
+
+
+def _liveness_verification_expired(state: LivenessState, now_ms: int) -> bool:
+    if state.verified_until_ms is None:
+        return True
+    return now_ms > state.verified_until_ms
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)

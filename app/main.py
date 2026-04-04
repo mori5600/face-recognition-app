@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="Validate dependencies and model files.")
     subparsers.add_parser(
         "download-models",
-        help="Download the official YuNet and SFace ONNX models into ./models.",
+        help="Download the official YuNet, SFace, and Face Landmarker models into ./models.",
     )
 
     camera_parser = subparsers.add_parser(
