@@ -1,39 +1,102 @@
+import re
+import tkinter.font as tkfont
+
 import customtkinter as ctk
 from PIL import Image
 
 from app.app.runtime import FaceRecognitionRuntime
 from app.domain.results import is_failure, unwrap_success
-from app.ui.view_model import build_main_window_view_model
+from app.ui.view_model import MainWindowViewModel, build_main_window_view_model
 
-UI_FONT_FAMILY = "Yu Gothic UI"
-MONO_FONT_FAMILY = "Consolas"
+PRIMARY_FONT_CANDIDATES = (
+    "Noto Sans JP",
+    "BIZ UDPGothic",
+    "Yu Gothic UI",
+    "Meiryo",
+)
+MONO_FONT_CANDIDATES = (
+    "Noto Sans Mono",
+    "Cascadia Mono",
+    "Consolas",
+)
 
-APP_BG = "#ebe5dc"
-CARD_BG = "#f8f4ee"
-CARD_ALT_BG = "#f1ebe2"
-TEXT_PRIMARY = "#1f2933"
-TEXT_MUTED = "#5b6670"
-ACCENT = "#1f5f8b"
-ACCENT_SOFT = "#d7e7f2"
-SUCCESS = "#2f7d5c"
-WARNING = "#b7791f"
-BORDER = "#d7d1c8"
+APP_BG = "#f3f4f6"
+CARD_BG = "#ffffff"
+CARD_ALT_BG = "#f8f9fb"
+TEXT_PRIMARY = "#333333"
+TEXT_MUTED = "#5f6874"
+ACCENT = "#0017c1"
+ACCENT_HOVER = "#00118f"
+ACCENT_ACTIVE = "#000060"
+ACCENT_SOFT = "#eef3ff"
+PREVIEW_BG = "#111827"
+PREVIEW_TEXT = "#f8fafc"
+BORDER = "#000000"
+BORDER_SOFT = "#d1d5db"
+DANGER = "#9f1d1d"
+DANGER_HOVER = "#7f1d1d"
+DANGER_SOFT = "#fef2f2"
+STATUS_LABELS = {
+    "camera": "カメラ",
+    "faces": "検出顔",
+    "people": "登録人数",
+    "selector": "顔選択",
+    "matcher": "照合方式",
+    "threshold": "照合閾値",
+}
+CAMERA_STATUS_LABELS = {
+    "running": "稼働中",
+    "stopped": "停止中",
+    "error": "エラー",
+}
 
 
 class MainWindow(ctk.CTk):
     def __init__(self, auto_start_camera: bool = True) -> None:
+        ctk.set_appearance_mode("light")
         super().__init__()
         self.title("Face Recognition App")
         self.geometry("1440x900")
         self.minsize(1220, 780)
         self.configure(fg_color=APP_BG)
 
-        self._font_body = ctk.CTkFont(family=UI_FONT_FAMILY, size=14)
-        self._font_small = ctk.CTkFont(family=UI_FONT_FAMILY, size=12)
-        self._font_heading = ctk.CTkFont(family=UI_FONT_FAMILY, size=30, weight="bold")
-        self._font_section = ctk.CTkFont(family=UI_FONT_FAMILY, size=17, weight="bold")
-        self._font_result = ctk.CTkFont(family=UI_FONT_FAMILY, size=22, weight="bold")
-        self._font_mono = ctk.CTkFont(family=MONO_FONT_FAMILY, size=13)
+        primary_font_family = self._pick_font_family(
+            PRIMARY_FONT_CANDIDATES,
+            fallback="Yu Gothic UI",
+        )
+        mono_font_family = self._pick_font_family(
+            MONO_FONT_CANDIDATES,
+            fallback="Consolas",
+        )
+
+        self._font_body = ctk.CTkFont(family=primary_font_family, size=14)
+        self._font_small = ctk.CTkFont(family=primary_font_family, size=12)
+        self._font_label = ctk.CTkFont(
+            family=primary_font_family,
+            size=12,
+            weight="bold",
+        )
+        self._font_heading = ctk.CTkFont(
+            family=primary_font_family,
+            size=34,
+            weight="bold",
+        )
+        self._font_section = ctk.CTkFont(
+            family=primary_font_family,
+            size=20,
+            weight="bold",
+        )
+        self._font_result = ctk.CTkFont(
+            family=primary_font_family,
+            size=26,
+            weight="bold",
+        )
+        self._font_stat = ctk.CTkFont(
+            family=primary_font_family,
+            size=18,
+            weight="bold",
+        )
+        self._font_mono = ctk.CTkFont(family=mono_font_family, size=13)
 
         self._runtime: FaceRecognitionRuntime | None = None
         self._preview_image = None
@@ -70,6 +133,17 @@ class MainWindow(ctk.CTk):
         self._refresh_view()
         self._schedule_tick()
 
+    def _pick_font_family(
+        self,
+        candidates: tuple[str, ...],
+        fallback: str,
+    ) -> str:
+        available = {family.casefold(): family for family in tkfont.families()}
+        for candidate in candidates:
+            if candidate.casefold() in available:
+                return available[candidate.casefold()]
+        return fallback
+
     def _maximize_window(self) -> None:
         try:
             self.state("zoomed")
@@ -84,20 +158,30 @@ class MainWindow(ctk.CTk):
 
         frame = ctk.CTkFrame(
             self,
-            corner_radius=24,
+            corner_radius=12,
             fg_color=CARD_BG,
             border_width=1,
             border_color=BORDER,
         )
         frame.grid(row=0, column=0, padx=40, pady=40, sticky="nsew")
+        frame.grid_columnconfigure(0, weight=1)
+
+        accent_bar = ctk.CTkFrame(
+            frame,
+            height=6,
+            corner_radius=0,
+            fg_color=ACCENT,
+        )
+        accent_bar.grid(row=0, column=0, sticky="ew")
 
         title = ctk.CTkLabel(
             frame,
             text="初期化に失敗しました",
             font=self._font_heading,
             text_color=TEXT_PRIMARY,
+            anchor="w",
         )
-        title.pack(anchor="w", padx=28, pady=(28, 14))
+        title.grid(row=1, column=0, sticky="w", padx=28, pady=(24, 14))
 
         body = ctk.CTkTextbox(
             frame,
@@ -105,110 +189,122 @@ class MainWindow(ctk.CTk):
             height=260,
             font=self._font_body,
             fg_color=CARD_ALT_BG,
-            border_width=0,
+            border_width=1,
+            border_color=BORDER_SOFT,
             text_color=TEXT_PRIMARY,
         )
-        body.pack(fill="both", expand=True, padx=28, pady=(0, 28))
+        body.grid(row=2, column=0, sticky="nsew", padx=28, pady=(0, 28))
         body.insert("1.0", message)
         body.configure(state="disabled")
 
     def _build_layout(self) -> None:
         runtime = self._require_runtime()
-        self.grid_columnconfigure(0, weight=7)
-        self.grid_columnconfigure(1, weight=4, minsize=430)
+        self.grid_columnconfigure(0, weight=15)
+        self.grid_columnconfigure(1, weight=4, minsize=320)
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
 
         self._header_frame = ctk.CTkFrame(
             self,
-            fg_color="transparent",
+            fg_color=CARD_BG,
+            corner_radius=0,
         )
-        self._header_frame.grid(
-            row=0, column=0, columnspan=2, sticky="ew", padx=24, pady=(18, 12)
-        )
+        self._header_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         self._header_frame.grid_columnconfigure(0, weight=1)
         self._header_frame.grid_columnconfigure(1, weight=0)
 
-        title_block = ctk.CTkFrame(self._header_frame, fg_color="transparent")
+        accent_bar = ctk.CTkFrame(
+            self._header_frame,
+            height=5,
+            corner_radius=0,
+            fg_color=ACCENT,
+        )
+        accent_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        header_body = ctk.CTkFrame(self._header_frame, fg_color="transparent")
+        header_body.grid(row=1, column=0, columnspan=2, sticky="ew", padx=24, pady=12)
+        header_body.grid_columnconfigure(0, weight=1)
+        header_body.grid_columnconfigure(1, weight=0)
+
+        title_block = ctk.CTkFrame(header_body, fg_color="transparent")
         title_block.grid(row=0, column=0, sticky="w")
 
         title = ctk.CTkLabel(
             title_block,
-            text="顔認証実験アプリ",
-            font=self._font_heading,
+            text="顔認証アプリ",
+            font=self._font_section,
             text_color=TEXT_PRIMARY,
+            anchor="w",
         )
         title.pack(anchor="w")
 
-        subtitle = ctk.CTkLabel(
-            title_block,
-            text="OpenCV DNN (YuNet + SFace) / SQLite / Windows local only",
-            font=self._font_small,
-            text_color=TEXT_MUTED,
+        self._message_shell = ctk.CTkFrame(
+            header_body,
+            fg_color=CARD_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
-        subtitle.pack(anchor="w", pady=(2, 0))
+        self._message_shell.grid(row=0, column=1, sticky="e", padx=(16, 0))
+
+        message_body = ctk.CTkFrame(self._message_shell, fg_color="transparent")
+        message_body.grid(row=0, column=0, sticky="nsew", padx=12, pady=8)
 
         self._message_banner = ctk.CTkLabel(
-            self._header_frame,
+            message_body,
             text="",
             font=self._font_body,
             text_color=TEXT_PRIMARY,
-            fg_color=CARD_BG,
-            corner_radius=16,
-            padx=18,
-            pady=10,
+            anchor="w",
+            wraplength=240,
         )
-        self._message_banner.grid(row=0, column=1, sticky="e")
+        self._message_banner.pack(anchor="w")
 
         self._preview_panel = ctk.CTkFrame(
             self,
-            corner_radius=28,
+            corner_radius=12,
             fg_color=CARD_BG,
             border_width=1,
-            border_color=BORDER,
+            border_color=BORDER_SOFT,
         )
         self._preview_panel.grid(
-            row=1, column=0, sticky="nsew", padx=(24, 12), pady=(0, 24)
+            row=1, column=0, sticky="nsew", padx=(24, 8), pady=(16, 24)
         )
         self._preview_panel.grid_rowconfigure(1, weight=1)
         self._preview_panel.grid_columnconfigure(0, weight=1)
 
         preview_header = ctk.CTkFrame(self._preview_panel, fg_color="transparent")
-        preview_header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 14))
+        preview_header.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 12))
         preview_header.grid_columnconfigure(0, weight=1)
 
         preview_title = ctk.CTkLabel(
             preview_header,
-            text="カメラプレビュー",
-            font=self._font_section,
+            text="プレビュー",
+            font=self._font_label,
             text_color=TEXT_PRIMARY,
+            anchor="w",
         )
         preview_title.grid(row=0, column=0, sticky="w")
-
-        preview_hint = ctk.CTkLabel(
-            preview_header,
-            text="検出した顔は枠で表示されます",
-            font=self._font_small,
-            text_color=TEXT_MUTED,
-        )
-        preview_hint.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         self._preview_label = ctk.CTkLabel(
             self._preview_panel,
             text="カメラを開始するとプレビューが表示されます。",
             font=self._font_body,
-            text_color="#f6f3ee",
-            fg_color="#243543",
-            corner_radius=22,
+            text_color=PREVIEW_TEXT,
+            fg_color=PREVIEW_BG,
+            corner_radius=8,
+            justify="center",
         )
-        self._preview_label.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 18))
+        self._preview_label.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 16))
 
         action_bar = ctk.CTkFrame(
             self._preview_panel,
-            corner_radius=20,
-            fg_color=CARD_ALT_BG,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
-        action_bar.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 24))
+        action_bar.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
         action_bar.grid_columnconfigure(0, weight=1)
         action_bar.grid_columnconfigure(1, weight=1)
         action_bar.grid_columnconfigure(2, weight=1)
@@ -216,138 +312,147 @@ class MainWindow(ctk.CTk):
 
         self._name_entry = ctk.CTkEntry(
             action_bar,
-            placeholder_text="登録名を入力",
+            placeholder_text="登録したい名前を入力",
             font=self._font_body,
             fg_color="#ffffff",
             border_color=BORDER,
             text_color=TEXT_PRIMARY,
-            height=42,
+            corner_radius=8,
+            height=46,
         )
         self._name_entry.grid(
-            row=0, column=0, columnspan=4, sticky="ew", padx=16, pady=(16, 12)
+            row=0, column=0, columnspan=3, sticky="ew", padx=(14, 8), pady=(14, 10)
+        )
+
+        self._register_button = ctk.CTkButton(
+            action_bar,
+            text="登録",
+            command=self._handle_register,
+            font=self._font_label,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color=CARD_BG,
+            corner_radius=8,
+            height=46,
+        )
+        self._register_button.grid(
+            row=0, column=3, sticky="ew", padx=(8, 14), pady=(14, 10)
         )
 
         self._start_button = ctk.CTkButton(
             action_bar,
             text="開始",
             command=self._handle_start_camera,
-            font=self._font_body,
+            font=self._font_label,
             fg_color=ACCENT,
-            hover_color="#184d71",
-            height=42,
+            hover_color=ACCENT_HOVER,
+            text_color=CARD_BG,
+            corner_radius=8,
+            height=46,
         )
         self._start_button.grid(
-            row=1, column=0, sticky="ew", padx=(16, 6), pady=(0, 16)
+            row=1, column=0, sticky="ew", padx=(14, 6), pady=(0, 14)
         )
 
         self._stop_button = ctk.CTkButton(
             action_bar,
             text="停止",
             command=self._handle_stop_camera,
-            font=self._font_body,
-            fg_color="#6a7a89",
-            hover_color="#596775",
-            height=42,
+            font=self._font_label,
+            fg_color=CARD_BG,
+            hover_color=CARD_ALT_BG,
+            text_color=TEXT_PRIMARY,
+            border_width=1,
+            border_color=BORDER,
+            corner_radius=8,
+            height=46,
         )
-        self._stop_button.grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 16))
-
-        self._register_button = ctk.CTkButton(
-            action_bar,
-            text="登録",
-            command=self._handle_register,
-            font=self._font_body,
-            fg_color=SUCCESS,
-            hover_color="#296a4e",
-            height=42,
-        )
-        self._register_button.grid(row=1, column=2, sticky="ew", padx=6, pady=(0, 16))
+        self._stop_button.grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 14))
 
         self._match_button = ctk.CTkButton(
             action_bar,
             text="照合",
             command=self._handle_match,
-            font=self._font_body,
-            fg_color=WARNING,
-            hover_color="#99641a",
-            height=42,
+            font=self._font_label,
+            fg_color=CARD_BG,
+            hover_color=ACCENT_SOFT,
+            text_color=ACCENT,
+            border_width=1,
+            border_color=ACCENT,
+            corner_radius=8,
+            height=46,
         )
         self._match_button.grid(
-            row=1, column=3, sticky="ew", padx=(6, 16), pady=(0, 16)
+            row=1, column=2, columnspan=2, sticky="ew", padx=(6, 14), pady=(0, 14)
         )
 
         self._dashboard_panel = ctk.CTkScrollableFrame(
             self,
-            corner_radius=28,
+            corner_radius=12,
             fg_color=CARD_BG,
             border_width=1,
-            border_color=BORDER,
+            border_color=BORDER_SOFT,
+            scrollbar_button_color="#9ca3af",
+            scrollbar_button_hover_color="#6b7280",
         )
         self._dashboard_panel.grid(
-            row=1, column=1, sticky="nsew", padx=(12, 24), pady=(0, 24)
+            row=1, column=1, sticky="nsew", padx=(8, 24), pady=(16, 24)
         )
         self._dashboard_panel.grid_columnconfigure(0, weight=1)
 
-        dashboard_title = ctk.CTkLabel(
-            self._dashboard_panel,
-            text="ダッシュボード",
-            font=self._font_section,
-            text_color=TEXT_PRIMARY,
-        )
-        dashboard_title.grid(row=0, column=0, sticky="w", padx=22, pady=(20, 12))
-
         self._status_card = ctk.CTkFrame(
             self._dashboard_panel,
-            corner_radius=20,
-            fg_color=CARD_ALT_BG,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
-        self._status_card.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 12))
+        self._status_card.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
         self._status_card.grid_columnconfigure((0, 1), weight=1)
+
         self._status_value_labels = []
         for index in range(6):
-            stat_frame = ctk.CTkFrame(
+            cell = ctk.CTkFrame(
                 self._status_card,
-                corner_radius=16,
-                fg_color="#ffffff",
-                border_width=1,
-                border_color=BORDER,
+                fg_color=CARD_ALT_BG,
+                corner_radius=8,
+                border_width=0,
             )
             row = index // 2
             column = index % 2
-            stat_frame.grid(row=row, column=column, sticky="ew", padx=10, pady=10)
-            stat_frame.grid_columnconfigure(0, weight=1)
+            cell.grid(row=row, column=column, sticky="ew", padx=8, pady=8)
+            cell.grid_columnconfigure(0, weight=1)
 
             key_label = ctk.CTkLabel(
-                stat_frame,
+                cell,
                 text="-",
                 font=self._font_small,
-                text_color=TEXT_MUTED,
+                text_color=ACCENT,
+                anchor="w",
             )
-            key_label.grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+            key_label.grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
 
             value_label = ctk.CTkLabel(
-                stat_frame,
+                cell,
                 text="-",
                 font=self._font_body,
                 text_color=TEXT_PRIMARY,
+                anchor="w",
+                justify="left",
+                wraplength=120,
             )
-            value_label.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
+            value_label.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 8))
             self._status_value_labels.append((key_label, value_label))
 
         settings_card = ctk.CTkFrame(
             self._dashboard_panel,
-            corner_radius=20,
-            fg_color=CARD_ALT_BG,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
-        settings_card.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 12))
+        settings_card.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 10))
         settings_card.grid_columnconfigure(0, weight=1)
-
-        settings_title = ctk.CTkLabel(
-            settings_card,
-            text="照合設定",
-            font=self._font_section,
-            text_color=TEXT_PRIMARY,
-        )
-        settings_title.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 10))
 
         self._face_selector_menu = ctk.CTkOptionMenu(
             settings_card,
@@ -355,13 +460,15 @@ class MainWindow(ctk.CTk):
             command=self._handle_face_selector_change,
             font=self._font_body,
             dropdown_font=self._font_body,
-            fg_color=ACCENT,
+            fg_color=CARD_BG,
             button_color=ACCENT,
-            button_hover_color="#184d71",
-            height=40,
+            button_hover_color=ACCENT_HOVER,
+            text_color=TEXT_PRIMARY,
+            corner_radius=8,
+            height=44,
         )
         self._face_selector_menu.grid(
-            row=1, column=0, sticky="ew", padx=16, pady=(0, 10)
+            row=0, column=0, sticky="ew", padx=12, pady=(12, 8)
         )
 
         self._matching_mode_menu = ctk.CTkOptionMenu(
@@ -370,27 +477,30 @@ class MainWindow(ctk.CTk):
             command=self._handle_matching_mode_change,
             font=self._font_body,
             dropdown_font=self._font_body,
-            fg_color=ACCENT,
+            fg_color=CARD_BG,
             button_color=ACCENT,
-            button_hover_color="#184d71",
-            height=40,
+            button_hover_color=ACCENT_HOVER,
+            text_color=TEXT_PRIMARY,
+            corner_radius=8,
+            height=44,
         )
         self._matching_mode_menu.grid(
-            row=2, column=0, sticky="ew", padx=16, pady=(0, 10)
+            row=1, column=0, sticky="ew", padx=12, pady=(0, 8)
         )
 
         threshold_row = ctk.CTkFrame(settings_card, fg_color="transparent")
-        threshold_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
+        threshold_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         threshold_row.grid_columnconfigure(0, weight=1)
 
         self._threshold_entry = ctk.CTkEntry(
             threshold_row,
-            placeholder_text="照合閾値",
+            placeholder_text="閾値",
             font=self._font_body,
             fg_color="#ffffff",
             border_color=BORDER,
             text_color=TEXT_PRIMARY,
-            height=40,
+            corner_radius=8,
+            height=44,
         )
         self._threshold_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self._threshold_entry.insert(0, runtime.matching_threshold_text())
@@ -400,32 +510,28 @@ class MainWindow(ctk.CTk):
             text="適用",
             width=90,
             command=self._handle_threshold_apply,
-            font=self._font_body,
+            font=self._font_label,
             fg_color=ACCENT,
-            hover_color="#184d71",
-            height=40,
+            hover_color=ACCENT_HOVER,
+            text_color=CARD_BG,
+            corner_radius=8,
+            height=44,
         )
         self._threshold_apply_button.grid(row=0, column=1, sticky="ew")
 
         lower_grid = ctk.CTkFrame(self._dashboard_panel, fg_color="transparent")
-        lower_grid.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 20))
+        lower_grid.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 16))
         lower_grid.grid_columnconfigure(0, weight=1)
 
         people_card = ctk.CTkFrame(
             lower_grid,
-            corner_radius=20,
-            fg_color=CARD_ALT_BG,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
         people_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         people_card.grid_columnconfigure(0, weight=1)
-
-        people_title = ctk.CTkLabel(
-            people_card,
-            text="登録済み人物",
-            font=self._font_section,
-            text_color=TEXT_PRIMARY,
-        )
-        people_title.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 10))
 
         self._person_menu = ctk.CTkOptionMenu(
             people_card,
@@ -433,75 +539,91 @@ class MainWindow(ctk.CTk):
             command=self._handle_person_change,
             font=self._font_body,
             dropdown_font=self._font_body,
-            fg_color=ACCENT,
+            fg_color=CARD_BG,
             button_color=ACCENT,
-            button_hover_color="#184d71",
-            height=40,
+            button_hover_color=ACCENT_HOVER,
+            text_color=TEXT_PRIMARY,
+            corner_radius=8,
+            height=44,
         )
-        self._person_menu.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+        self._person_menu.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
 
         self._delete_person_button = ctk.CTkButton(
             people_card,
-            text="選択人物を削除",
+            text="削除",
             command=self._handle_delete_person,
-            font=self._font_body,
-            fg_color="#8d4b4b",
-            hover_color="#753d3d",
-            height=40,
+            font=self._font_label,
+            fg_color=CARD_BG,
+            hover_color=DANGER_SOFT,
+            text_color=DANGER,
+            border_width=1,
+            border_color=DANGER,
+            corner_radius=8,
+            height=44,
         )
         self._delete_person_button.grid(
-            row=2, column=0, sticky="ew", padx=16, pady=(0, 10)
+            row=1, column=0, sticky="ew", padx=12, pady=(0, 8)
         )
 
         self._people_list = ctk.CTkScrollableFrame(
             people_card,
-            corner_radius=16,
-            fg_color="#ffffff",
-            height=200,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+            height=180,
+            scrollbar_button_color="#9ca3af",
+            scrollbar_button_hover_color="#6b7280",
         )
-        self._people_list.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
+        self._people_list.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         self._people_list.grid_columnconfigure(0, weight=1)
 
         result_card = ctk.CTkFrame(
             lower_grid,
-            corner_radius=20,
-            fg_color=CARD_ALT_BG,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
         )
         result_card.grid(row=1, column=0, sticky="ew")
         result_card.grid_columnconfigure(0, weight=1)
 
-        result_title = ctk.CTkLabel(
+        self._result_badge = ctk.CTkLabel(
             result_card,
-            text="照合結果",
-            font=self._font_section,
-            text_color=TEXT_PRIMARY,
+            text="待機中",
+            font=self._font_small,
+            text_color=ACCENT,
+            fg_color=ACCENT_SOFT,
+            corner_radius=8,
+            padx=10,
+            pady=4,
         )
-        result_title.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 10))
+        self._result_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
 
         self._result_primary_label = ctk.CTkLabel(
             result_card,
             text="まだ照合していません。",
-            font=self._font_result,
+            font=self._font_body,
             text_color=TEXT_PRIMARY,
             anchor="w",
             justify="left",
-            wraplength=360,
+            wraplength=240,
         )
         self._result_primary_label.grid(
-            row=1, column=0, sticky="nw", padx=16, pady=(0, 8)
+            row=1, column=0, sticky="nw", padx=12, pady=(0, 6)
         )
 
         self._result_detail_label = ctk.CTkLabel(
             result_card,
-            text="",
+            text="カメラを向けて照合を実行してください。",
             font=self._font_body,
             text_color=TEXT_MUTED,
             anchor="w",
             justify="left",
-            wraplength=360,
+            wraplength=240,
         )
         self._result_detail_label.grid(
-            row=2, column=0, sticky="nw", padx=16, pady=(0, 16)
+            row=2, column=0, sticky="nw", padx=12, pady=(0, 12)
         )
 
     def _require_runtime(self) -> FaceRecognitionRuntime:
@@ -549,7 +671,7 @@ class MainWindow(ctk.CTk):
         self._preview_label._image = None
         self._preview_label._label.configure(image="")
 
-    def _refresh_metadata(self, view_model) -> None:
+    def _refresh_metadata(self, view_model: MainWindowViewModel) -> None:
         message_text = view_model.message
         if message_text != self._last_message_text:
             self._message_banner.configure(text=message_text)
@@ -621,8 +743,17 @@ class MainWindow(ctk.CTk):
                 key, value = status_line.split("=", 1)
             else:
                 key, value = "info", status_line
-            key_label.configure(text=key.upper())
-            value_label.configure(text=value)
+            key_label.configure(text=STATUS_LABELS.get(key, key.upper()))
+            value_label.configure(text=self._format_status_value(key, value))
+
+    def _format_status_value(self, key: str, value: str) -> str:
+        if key == "camera":
+            return CAMERA_STATUS_LABELS.get(value, value)
+        if key == "faces":
+            return f"{value} 件"
+        if key == "people":
+            return f"{value} 人"
+        return value
 
     def _render_people_list(self, people_lines: tuple[str, ...]) -> None:
         for child in self._people_list.winfo_children():
@@ -634,35 +765,151 @@ class MainWindow(ctk.CTk):
         for row_index, line in enumerate(people_lines):
             is_selected = line.startswith(">")
             text = line[1:].strip() if is_selected else line.strip()
-            label = ctk.CTkLabel(
+            title, detail = self._parse_people_line(text)
+
+            item_frame = ctk.CTkFrame(
                 self._people_list,
-                text=text,
+                fg_color=ACCENT_SOFT if is_selected else CARD_BG,
+                border_width=1,
+                border_color=ACCENT if is_selected else BORDER_SOFT,
+                corner_radius=10,
+            )
+            item_frame.grid(row=row_index, column=0, sticky="ew", padx=8, pady=6)
+            item_frame.grid_columnconfigure(0, weight=1)
+
+            title_label = ctk.CTkLabel(
+                item_frame,
+                text=title,
+                anchor="w",
+                font=self._font_label,
+                text_color=TEXT_PRIMARY,
+            )
+            title_label.grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+
+            if is_selected:
+                selected_badge = ctk.CTkLabel(
+                    item_frame,
+                    text="選択中",
+                    font=self._font_small,
+                    text_color=ACCENT,
+                    fg_color=CARD_BG,
+                    corner_radius=8,
+                    padx=8,
+                    pady=4,
+                )
+                selected_badge.grid(row=0, column=1, sticky="e", padx=12, pady=(10, 2))
+
+            detail_label = ctk.CTkLabel(
+                item_frame,
+                text=detail,
                 anchor="w",
                 justify="left",
                 wraplength=330,
-                font=self._font_body,
-                text_color=TEXT_PRIMARY if is_selected else TEXT_MUTED,
-                fg_color=ACCENT_SOFT if is_selected else "transparent",
-                corner_radius=12,
-                padx=12,
-                pady=10,
+                font=self._font_small,
+                text_color=TEXT_MUTED,
             )
-            label.grid(row=row_index, column=0, sticky="ew", padx=8, pady=6)
+            detail_label.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                padx=12,
+                pady=(0, 10),
+            )
+
+    def _parse_people_line(self, line: str) -> tuple[str, str]:
+        if line == "未登録です。":
+            return ("未登録です。", "顔を登録するとここに一覧表示されます。")
+
+        parts = [part.strip() for part in line.split("|")]
+        title = parts[0]
+        detail_parts: list[str] = []
+        for part in parts[1:]:
+            if "=" not in part:
+                detail_parts.append(part)
+                continue
+
+            key, value = part.split("=", 1)
+            if key == "encoding":
+                detail_parts.append(f"特徴量 {value} 件")
+                continue
+            if key == "updated":
+                detail_parts.append(f"更新 {value}")
+                continue
+            detail_parts.append(f"{key} {value}")
+
+        detail = " / ".join(detail_parts)
+        if detail == "":
+            detail = "登録済みの人物です。"
+        return (title, detail)
 
     def _render_result(self, result_lines: tuple[str, ...]) -> None:
         if len(result_lines) == 0:
+            self._result_badge.configure(
+                text="待機中",
+                fg_color=ACCENT_SOFT,
+                text_color=ACCENT,
+            )
             self._result_primary_label.configure(text="まだ照合していません。")
-            self._result_detail_label.configure(text="")
+            self._result_detail_label.configure(
+                text="カメラを向けて照合を実行してください。"
+            )
             return
 
         primary_text = result_lines[0]
         detail_text = "\n".join(result_lines[1:])
-        self._result_primary_label.configure(text=primary_text)
-        self._result_detail_label.configure(text=detail_text)
+        badge_text, badge_fg, badge_text_color = self._result_badge_style(primary_text)
+        rendered_primary = self._result_primary_text(primary_text)
+        rendered_detail = (
+            detail_text if detail_text != "" else self._result_detail_text(primary_text)
+        )
+
+        self._result_badge.configure(
+            text=badge_text,
+            fg_color=badge_fg,
+            text_color=badge_text_color,
+        )
+        self._result_primary_label.configure(text=rendered_primary)
+        self._result_detail_label.configure(text=rendered_detail)
+
+    def _result_badge_style(self, primary_text: str) -> tuple[str, str, str]:
+        if primary_text.startswith("一致:"):
+            return ("一致", ACCENT, CARD_BG)
+        if primary_text.startswith("不一致:"):
+            return ("不一致", CARD_ALT_BG, TEXT_PRIMARY)
+        if "登録済みの人物がいません" in primary_text:
+            return ("未登録", CARD_ALT_BG, TEXT_PRIMARY)
+        return ("情報", ACCENT_SOFT, ACCENT)
+
+    def _result_primary_text(self, primary_text: str) -> str:
+        for prefix in ("一致:", "不一致:"):
+            if primary_text.startswith(prefix):
+                return primary_text[len(prefix) :].strip()
+        return primary_text
+
+    def _result_detail_text(self, primary_text: str) -> str:
+        match = re.search(r"distance=([0-9.]+)", primary_text)
+        if primary_text.startswith("一致:"):
+            if match is not None:
+                return (
+                    f"最も近い登録データとの距離は {match.group(1)} です。"
+                    " 現在の閾値以下のため一致と判定しました。"
+                )
+            return "現在の閾値以下のため一致と判定しました。"
+        if primary_text.startswith("不一致:"):
+            if match is not None:
+                return (
+                    f"最も近い候補との距離は {match.group(1)} です。"
+                    " 現在の閾値を超えているため不一致です。"
+                )
+            return "最も近い候補でも現在の閾値を超えています。"
+        if "登録済みの人物がいません" in primary_text:
+            return "先に顔を登録すると照合できるようになります。"
+        return ""
 
     def _fit_preview_image(self, image: Image.Image) -> Image.Image:
-        max_width = max(480, self._preview_label.winfo_width() - 16)
-        max_height = max(320, self._preview_label.winfo_height() - 16)
+        max_width = max(480, self._preview_label.winfo_width() - 24)
+        max_height = max(320, self._preview_label.winfo_height() - 24)
 
         source_width, source_height = image.size
         scale = min(max_width / source_width, max_height / source_height)
