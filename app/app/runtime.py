@@ -1,17 +1,28 @@
-from dataclasses import replace
 import time
+from dataclasses import replace
 
 import numpy as np
 
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.errors import AppError, DomainError
-from app.domain.ids import LogId, PersonId
+from app.domain.experiments import (
+    ExperimentScenario,
+    ExperimentSession,
+    ExperimentTrial,
+)
+from app.domain.ids import (
+    ExperimentSessionId,
+    ExperimentTrialId,
+    LogId,
+    PersonId,
+)
 from app.domain.liveness import LivenessChallengeStep
 from app.domain.logs import AppLogEntry, AppLogEvent, AppLogLevel
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
 from app.domain.states import (
     AppState,
     CameraState,
+    ExperimentState,
     LivenessState,
     LogState,
     MatchingState,
@@ -21,6 +32,8 @@ from app.domain.states import (
 )
 from app.domain.statuses import (
     CameraStatus,
+    DeferredActionKind,
+    ExperimentStatus,
     LivenessStatus,
     MatchingStatus,
     RegistrationStatus,
@@ -50,10 +63,14 @@ from app.gateways.sqlite_gateway import (
     delete_person,
     initialize_database,
     insert_encoding,
+    insert_experiment_session,
+    insert_experiment_trial,
     insert_log,
     insert_person,
-    load_recent_logs,
+    load_latest_experiment,
     load_people,
+    load_recent_logs,
+    update_experiment_session_status,
     update_person_updated_at,
 )
 from app.infra.app_paths import AppPaths
@@ -65,6 +82,11 @@ from app.infra.cv2_compat import (
     put_text,
 )
 from app.infra.download_models import MODEL_SOURCES, download_models
+from app.strategy.experiment import (
+    ExperimentTrialAssessment,
+    assess_experiment_trial,
+    summarize_experiment_trials,
+)
 from app.strategy.face_selection import (
     CenterFaceSelector,
     LargestFaceSelector,
@@ -92,6 +114,14 @@ MATCHING_MODE_LABELS = {
     "nearest_person": "人物単位最近傍",
 }
 MATCHING_MODE_BY_LABEL = {label: key for key, label in MATCHING_MODE_LABELS.items()}
+
+EXPERIMENT_SCENARIO_LABELS = {
+    ExperimentScenario.GENUINE: "本人受入試験",
+    ExperimentScenario.IMPOSTOR: "他人拒否試験",
+}
+EXPERIMENT_SCENARIO_BY_LABEL = {
+    label: scenario for scenario, label in EXPERIMENT_SCENARIO_LABELS.items()
+}
 
 DEFAULT_MATCHING_THRESHOLD = 1.128
 RECENT_LOG_LIMIT = 50
@@ -165,12 +195,48 @@ class FaceRecognitionRuntime:
             return Failure(AppError(logs_result.message))
         logs = unwrap_success(logs_result)
 
+        experiment_result = load_latest_experiment(resolved_paths)
+        if is_failure(experiment_result):
+            close_liveness_engine(liveness_engine)
+            return Failure(AppError(experiment_result.message))
+        experiment = unwrap_success(experiment_result)
+        if (
+            experiment.status is ExperimentStatus.ACTIVE
+            and experiment.session is not None
+        ):
+            completed_at = Timestamp.now()
+            update_result = update_experiment_session_status(
+                resolved_paths,
+                experiment.session.session_id,
+                ExperimentStatus.ABORTED,
+                completed_at,
+            )
+            if is_failure(update_result):
+                close_liveness_engine(liveness_engine)
+                return Failure(AppError(update_result.message))
+            experiment = replace(
+                experiment,
+                status=ExperimentStatus.ABORTED,
+                session=ExperimentSession(
+                    session_id=experiment.session.session_id,
+                    started_at=experiment.session.started_at,
+                    completed_at=completed_at,
+                    scenario=experiment.session.scenario,
+                    target_person_id=experiment.session.target_person_id,
+                    target_person_name=experiment.session.target_person_name,
+                    face_selector_key=experiment.session.face_selector_key,
+                    matching_mode_key=experiment.session.matching_mode_key,
+                    threshold=experiment.session.threshold,
+                ),
+            )
+
         selected_person_id = (
             people.persons[0].person_id if len(people.persons) > 0 else None
         )
         initial_state = AppState(
             people=people,
             logs=logs,
+            experiment=experiment,
             ui=UiState(
                 message="準備完了です。カメラを開始してください。",
                 selected_person_id=selected_person_id,
@@ -185,6 +251,8 @@ class FaceRecognitionRuntime:
         return Success(runtime)
 
     def shutdown(self) -> None:
+        if self._state.experiment.status is ExperimentStatus.ACTIVE:
+            self.stop_experiment(aborted=True)
         if self._camera_handle is not None:
             close_camera(self._camera_handle)
             self._camera_handle = None
@@ -393,9 +461,30 @@ class FaceRecognitionRuntime:
             ),
         )
         self._record_liveness_transition(previous_liveness_state, liveness_state)
+        deferred_result = self._execute_deferred_action_if_ready()
+        if is_failure(deferred_result):
+            return Failure(AppError(deferred_result.message))
         return Success(self._state)
 
     def register_face(self, draft_name: str) -> Result[AppState, AppError]:
+        return self._perform_register_face(draft_name, require_liveness=True)
+
+    def _perform_register_face(
+        self,
+        draft_name: str,
+        require_liveness: bool,
+    ) -> Result[AppState, AppError]:
+        if require_liveness:
+            self._state = replace(
+                self._state,
+                registration=RegistrationState(
+                    draft_name=draft_name,
+                    status=RegistrationStatus.IDLE,
+                    last_registered_person_id=self._state.registration.last_registered_person_id,
+                    last_error=None,
+                ),
+            )
+
         name_result = DisplayName.create(draft_name)
         if is_failure(name_result):
             return self._registration_failure(name_result.message)
@@ -406,8 +495,20 @@ class FaceRecognitionRuntime:
             return self._registration_failure(face_result.message)
         selected_face = unwrap_success(face_result)
 
-        liveness_result = self._ensure_liveness_verified("登録")
+        liveness_result = self._ensure_liveness_verified(
+            "登録",
+            DeferredActionKind.REGISTER,
+            deferred_name=display_name.value,
+            require_liveness=require_liveness,
+        )
         if is_failure(liveness_result):
+            self._state = replace(
+                self._state,
+                registration=replace(
+                    self._state.registration,
+                    draft_name=display_name.value,
+                ),
+            )
             return Failure(AppError(liveness_result.message))
 
         now = Timestamp.now()
@@ -432,7 +533,7 @@ class FaceRecognitionRuntime:
 
             self._state = replace(
                 self._state,
-                people=PeopleState(persons=self._state.people.persons + (person,)),
+                people=PeopleState(persons=(*self._state.people.persons, person)),
                 registration=RegistrationState(
                     draft_name=display_name.value,
                     status=RegistrationStatus.SUCCESS,
@@ -470,7 +571,7 @@ class FaceRecognitionRuntime:
         updated_person = RegisteredPerson(
             person_id=existing_person.person_id,
             display_name=existing_person.display_name,
-            encodings=existing_person.encodings + (selected_face.encoding,),
+            encodings=(*existing_person.encodings, selected_face.encoding),
             created_at=existing_person.created_at,
             updated_at=now,
         )
@@ -504,12 +605,32 @@ class FaceRecognitionRuntime:
         return Success(self._state)
 
     def match_face(self) -> Result[AppState, AppError]:
+        return self._perform_match_face(require_liveness=True)
+
+    def _perform_match_face(
+        self,
+        require_liveness: bool,
+    ) -> Result[AppState, AppError]:
+        if require_liveness:
+            self._state = replace(
+                self._state,
+                matching=MatchingState(
+                    status=MatchingStatus.IDLE,
+                    results=(),
+                    last_error=None,
+                ),
+            )
+
         face_result = self._select_face()
         if is_failure(face_result):
             return self._matching_failure(face_result.message)
         selected_face = unwrap_success(face_result)
 
-        liveness_result = self._ensure_liveness_verified("照合")
+        liveness_result = self._ensure_liveness_verified(
+            "照合",
+            DeferredActionKind.MATCH,
+            require_liveness=require_liveness,
+        )
         if is_failure(liveness_result):
             return Failure(AppError(liveness_result.message))
 
@@ -541,6 +662,7 @@ class FaceRecognitionRuntime:
                 selected_person_id=selected_person_id,
             ),
         )
+        self._record_experiment_trial(result)
         self._record_match_result(result)
         return Success(self._state)
 
@@ -557,6 +679,12 @@ class FaceRecognitionRuntime:
             person
             for person in self._state.people.persons
             if person.person_id != selected_person.person_id
+        )
+        experiment_state = self._state.experiment
+        should_abort_experiment = (
+            experiment_state.status is ExperimentStatus.ACTIVE
+            and experiment_state.session is not None
+            and experiment_state.session.target_person_id == selected_person.person_id
         )
         next_selected_person_id = (
             updated_people[0].person_id if len(updated_people) > 0 else None
@@ -575,6 +703,16 @@ class FaceRecognitionRuntime:
                 selected_person_id=next_selected_person_id,
             ),
         )
+        if should_abort_experiment:
+            self.stop_experiment(aborted=True)
+            self._state = replace(
+                self._state,
+                ui=replace(
+                    self._state.ui,
+                    message=f"{selected_person.display_name.value} さんを削除しました。",
+                    selected_person_id=next_selected_person_id,
+                ),
+            )
         self._record_log(
             AppLogLevel.INFO,
             AppLogEvent.PERSON_DELETED,
@@ -650,6 +788,183 @@ class FaceRecognitionRuntime:
 
         return tuple(_format_log_line(entry) for entry in self._state.logs.entries[:8])
 
+    def experiment_summary_lines(self) -> tuple[str, ...]:
+        experiment_state = self._state.experiment
+        session = experiment_state.session
+        if session is None:
+            return (
+                "未開始",
+                "対象人物を選択して評価実験を開始します。",
+            )
+
+        assessments = tuple(
+            _assessment_from_trial(trial) for trial in experiment_state.trials
+        )
+        metrics = summarize_experiment_trials(assessments)
+        headline = f"{EXPERIMENT_SCENARIO_LABELS[session.scenario]} / 対象 {session.target_person_name}"
+        if metrics.trial_count == 0:
+            return (
+                headline,
+                "試行はまだありません。",
+            )
+
+        primary_metric = (
+            f"成功率 {_format_ratio(metrics.success_rate)}"
+            if session.scenario is ExperimentScenario.GENUINE
+            else f"誤受入率 {_format_ratio(metrics.target_accept_rate)}"
+        )
+        distance_text = (
+            f"平均 distance {metrics.average_distance.value:.3f}"
+            if metrics.average_distance is not None
+            else "distance なし"
+        )
+        latest_text = _build_experiment_latest_text(experiment_state)
+        return (
+            headline,
+            f"試行 {metrics.trial_count}件 / 正答 {metrics.success_count}件 / {primary_metric}",
+            distance_text,
+            latest_text,
+        )
+
+    def experiment_scenario_labels(self) -> tuple[str, ...]:
+        return tuple(EXPERIMENT_SCENARIO_LABELS.values())
+
+    def selected_experiment_scenario_label(self) -> str:
+        scenario = self._state.experiment.scenario or ExperimentScenario.GENUINE
+        return EXPERIMENT_SCENARIO_LABELS[scenario]
+
+    def set_experiment_scenario_by_label(
+        self,
+        label: str,
+    ) -> Result[AppState, AppError]:
+        if self._state.experiment.status is ExperimentStatus.ACTIVE:
+            return Failure(AppError("評価実験の実行中は方式を変更できません。"))
+        scenario = EXPERIMENT_SCENARIO_BY_LABEL.get(label)
+        if scenario is None:
+            return Failure(AppError(f"Unknown experiment scenario: {label}"))
+
+        self._state = replace(
+            self._state,
+            experiment=replace(self._state.experiment, scenario=scenario),
+            ui=replace(
+                self._state.ui, message=f"評価実験の方式を {label} に変更しました。"
+            ),
+        )
+        return Success(self._state)
+
+    def start_experiment(self) -> Result[AppState, AppError]:
+        target_person = self.selected_person()
+        if target_person is None:
+            return Failure(AppError("評価対象の人物を選択してください。"))
+
+        current_experiment = self._state.experiment
+        if current_experiment.status is ExperimentStatus.ACTIVE:
+            return Failure(AppError("評価実験は既に開始しています。"))
+
+        scenario = current_experiment.scenario or ExperimentScenario.GENUINE
+        session = ExperimentSession(
+            session_id=ExperimentSessionId.new(),
+            started_at=Timestamp.now(),
+            scenario=scenario,
+            target_person_id=target_person.person_id,
+            target_person_name=target_person.display_name.value,
+            face_selector_key=self._face_selector_key,
+            matching_mode_key=self._matching_mode_key,
+            threshold=self._matching_threshold,
+            completed_at=None,
+        )
+        insert_result = insert_experiment_session(
+            self._paths,
+            session,
+            ExperimentStatus.ACTIVE,
+        )
+        if is_failure(insert_result):
+            return Failure(AppError(insert_result.message))
+
+        self._state = replace(
+            self._state,
+            experiment=ExperimentState(
+                status=ExperimentStatus.ACTIVE,
+                session=session,
+                trials=(),
+                latest_distance=None,
+                last_success=None,
+                scenario=scenario,
+            ),
+            ui=replace(
+                self._state.ui,
+                message=(
+                    f"評価実験を開始しました。対象は {target_person.display_name.value} さんです。"
+                ),
+            ),
+        )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.EXPERIMENT_STARTED,
+            (
+                f"{EXPERIMENT_SCENARIO_LABELS[scenario]} を開始しました。"
+                f" 対象は {target_person.display_name.value} さんです。"
+            ),
+            person_id=target_person.person_id,
+            person_name=target_person.display_name.value,
+        )
+        return Success(self._state)
+
+    def stop_experiment(
+        self,
+        aborted: bool = False,
+    ) -> Result[AppState, AppError]:
+        experiment_state = self._state.experiment
+        session = experiment_state.session
+        if session is None or experiment_state.status is ExperimentStatus.IDLE:
+            return Failure(AppError("停止する評価実験がありません。"))
+
+        completed_at = Timestamp.now()
+        next_status = (
+            ExperimentStatus.ABORTED if aborted else ExperimentStatus.COMPLETED
+        )
+        update_result = update_experiment_session_status(
+            self._paths,
+            session.session_id,
+            next_status,
+            completed_at,
+        )
+        if is_failure(update_result):
+            return Failure(AppError(update_result.message))
+
+        completed_session = ExperimentSession(
+            session_id=session.session_id,
+            started_at=session.started_at,
+            completed_at=completed_at,
+            scenario=session.scenario,
+            target_person_id=session.target_person_id,
+            target_person_name=session.target_person_name,
+            face_selector_key=session.face_selector_key,
+            matching_mode_key=session.matching_mode_key,
+            threshold=session.threshold,
+        )
+        next_message = (
+            "評価実験を中断しました。" if aborted else "評価実験を終了しました。"
+        )
+        self._state = replace(
+            self._state,
+            experiment=replace(
+                experiment_state,
+                status=next_status,
+                session=completed_session,
+                scenario=completed_session.scenario,
+            ),
+            ui=replace(self._state.ui, message=next_message),
+        )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.EXPERIMENT_STOPPED,
+            next_message,
+            person_id=completed_session.target_person_id,
+            person_name=completed_session.target_person_name,
+        )
+        return Success(self._state)
+
     def status_lines(self) -> tuple[str, ...]:
         return (
             f"camera={self._state.camera.status}",
@@ -663,6 +978,15 @@ class FaceRecognitionRuntime:
     def can_target_face(self) -> bool:
         face_result = self._select_face()
         return not is_failure(face_result)
+
+    def can_start_experiment(self) -> bool:
+        return (
+            self.selected_person() is not None
+            and self._state.experiment.status is not ExperimentStatus.ACTIVE
+        )
+
+    def can_stop_experiment(self) -> bool:
+        return self._state.experiment.status is ExperimentStatus.ACTIVE
 
     def face_selector_labels(self) -> tuple[str, ...]:
         return tuple(FACE_SELECTOR_LABELS.values())
@@ -792,6 +1116,45 @@ class FaceRecognitionRuntime:
         )
         return Failure(AppError(message))
 
+    def _execute_deferred_action_if_ready(self) -> Result[None, AppError]:
+        liveness_state = self._state.liveness
+        if liveness_state.status is not LivenessStatus.VERIFIED:
+            return Success(None)
+        if _liveness_verification_expired(liveness_state, _now_ms()):
+            return Success(None)
+        if liveness_state.deferred_action is None:
+            return Success(None)
+
+        deferred_action = liveness_state.deferred_action
+        deferred_name = liveness_state.deferred_name
+        self._state = replace(
+            self._state,
+            liveness=replace(
+                liveness_state,
+                deferred_action=None,
+                deferred_name=None,
+            ),
+        )
+
+        if deferred_action is DeferredActionKind.MATCH:
+            match_result = self._perform_match_face(require_liveness=False)
+            if is_failure(match_result):
+                return Failure(AppError(match_result.message))
+            return Success(None)
+
+        if deferred_name is None:
+            return Failure(
+                AppError("登録名が見つからないため自動登録を続行できません。")
+            )
+
+        register_result = self._perform_register_face(
+            deferred_name,
+            require_liveness=False,
+        )
+        if is_failure(register_result):
+            return Failure(AppError(register_result.message))
+        return Success(None)
+
     def _record_log(
         self,
         level: AppLogLevel,
@@ -818,7 +1181,7 @@ class FaceRecognitionRuntime:
         self._state = replace(
             self._state,
             logs=LogState(
-                entries=(entry,) + self._state.logs.entries[: RECENT_LOG_LIMIT - 1],
+                entries=(entry, *self._state.logs.entries[: RECENT_LOG_LIMIT - 1]),
             ),
         )
 
@@ -869,6 +1232,46 @@ class FaceRecognitionRuntime:
                 AppLogEvent.LIVENESS_EXPIRED,
                 current_state.last_error or "生体確認の有効時間が切れました。",
             )
+
+    def _record_experiment_trial(self, result: MatchResult) -> None:
+        experiment_state = self._state.experiment
+        session = experiment_state.session
+        if session is None or experiment_state.status is not ExperimentStatus.ACTIVE:
+            return
+
+        assessment = assess_experiment_trial(
+            session.scenario,
+            session.target_person_id,
+            result,
+        )
+        trial = ExperimentTrial(
+            trial_id=ExperimentTrialId.new(),
+            session_id=session.session_id,
+            created_at=Timestamp.now(),
+            matched=assessment.matched,
+            accepted_as_target=assessment.accepted_as_target,
+            success=assessment.success,
+            candidate_person_id=assessment.candidate_person_id,
+            candidate_person_name=assessment.candidate_person_name,
+            distance=assessment.distance,
+        )
+        insert_result = insert_experiment_trial(self._paths, trial)
+        if is_failure(insert_result):
+            self._state = replace(
+                self._state,
+                ui=replace(self._state.ui, message=insert_result.message),
+            )
+            return
+
+        self._state = replace(
+            self._state,
+            experiment=replace(
+                experiment_state,
+                trials=(*experiment_state.trials, trial),
+                latest_distance=trial.distance,
+                last_success=trial.success,
+            ),
+        )
 
     def _record_match_result(self, result: MatchResult) -> None:
         candidate = result.candidate
@@ -942,7 +1345,16 @@ class FaceRecognitionRuntime:
         distance = unwrap_success(distance_result)
         return Success(distance)
 
-    def _ensure_liveness_verified(self, action_label: str) -> Result[None, AppError]:
+    def _ensure_liveness_verified(
+        self,
+        action_label: str,
+        deferred_action: DeferredActionKind,
+        deferred_name: str | None = None,
+        require_liveness: bool = True,
+    ) -> Result[None, AppError]:
+        if not require_liveness:
+            return Success(None)
+
         now_ms = _now_ms()
         previous_liveness_state = self._state.liveness
         liveness_state = previous_liveness_state
@@ -957,7 +1369,19 @@ class FaceRecognitionRuntime:
             return Success(None)
 
         if liveness_state.status is not LivenessStatus.CHALLENGE:
-            liveness_state = self._begin_liveness_challenge(action_label, now_ms)
+            liveness_state = self._begin_liveness_challenge(
+                action_label,
+                deferred_action,
+                deferred_name,
+                now_ms,
+            )
+        else:
+            liveness_state = replace(
+                liveness_state,
+                requested_action=action_label,
+                deferred_action=deferred_action,
+                deferred_name=deferred_name,
+            )
         message = _build_liveness_message(liveness_state)
         self._state = replace(
             self._state,
@@ -970,11 +1394,15 @@ class FaceRecognitionRuntime:
     def _begin_liveness_challenge(
         self,
         action_label: str,
+        deferred_action: DeferredActionKind,
+        deferred_name: str | None,
         now_ms: int,
     ) -> LivenessState:
         return LivenessState(
             status=LivenessStatus.CHALLENGE,
             requested_action=action_label,
+            deferred_action=deferred_action,
+            deferred_name=deferred_name,
             challenge_steps=create_liveness_challenge_steps(),
             current_step_index=0,
             neutral_ready=False,
@@ -1000,6 +1428,8 @@ class FaceRecognitionRuntime:
             failed_state = LivenessState(
                 status=LivenessStatus.FAILED,
                 requested_action=current.requested_action,
+                deferred_action=current.deferred_action,
+                deferred_name=current.deferred_name,
                 last_error="生体確認がタイムアウトしました。もう一度操作してください。",
             )
             return Success((failed_state, failed_state.last_error))
@@ -1116,6 +1546,38 @@ def _format_log_line(entry: AppLogEntry) -> str:
     if entry.distance is None:
         return f"{timestamp_text} | {entry.message}"
     return f"{timestamp_text} | {entry.message} / distance {entry.distance.value:.3f}"
+
+
+def _assessment_from_trial(trial: ExperimentTrial) -> ExperimentTrialAssessment:
+    return ExperimentTrialAssessment(
+        matched=trial.matched,
+        accepted_as_target=trial.accepted_as_target,
+        success=trial.success,
+        candidate_person_id=trial.candidate_person_id,
+        candidate_person_name=trial.candidate_person_name,
+        distance=trial.distance,
+    )
+
+
+def _build_experiment_latest_text(state: ExperimentState) -> str:
+    if len(state.trials) == 0:
+        return "直近: まだ記録はありません。"
+
+    latest_trial = state.trials[-1]
+    status_text = "正答" if latest_trial.success else "誤判定"
+    candidate_text = latest_trial.candidate_person_name or "候補なし"
+    if latest_trial.distance is None:
+        return f"直近: {status_text} / {candidate_text}"
+    return (
+        f"直近: {status_text} / {candidate_text} / "
+        f"distance {latest_trial.distance.value:.3f}"
+    )
+
+
+def _format_ratio(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value * 100:.1f}%"
 
 
 def _active_liveness_step(

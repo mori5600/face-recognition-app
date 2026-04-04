@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,8 @@ from app.gateways.sqlite_gateway import (
 )
 from app.infra.app_paths import AppPaths
 
+EXPECTED_LOG_COUNT = 2
+
 
 def test_insert_log_and_load_recent_logs_round_trip(tmp_path: Path) -> None:
     paths = _build_paths(tmp_path)
@@ -21,7 +23,7 @@ def test_insert_log_and_load_recent_logs_round_trip(tmp_path: Path) -> None:
     init_result = initialize_database(paths)
     assert not is_failure(init_result)
 
-    base_time = datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc)
+    base_time = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
     older_entry = AppLogEntry(
         log_id=LogId.new(),
         created_at=_timestamp(base_time),
@@ -51,7 +53,7 @@ def test_insert_log_and_load_recent_logs_round_trip(tmp_path: Path) -> None:
 
     log_state = unwrap_success(load_result)
 
-    assert len(log_state.entries) == 2
+    assert len(log_state.entries) == EXPECTED_LOG_COUNT
     assert [entry.event for entry in log_state.entries] == [
         AppLogEvent.MATCH_SUCCEEDED,
         AppLogEvent.CAMERA_STARTED,

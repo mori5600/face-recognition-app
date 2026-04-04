@@ -25,6 +25,8 @@ class AppLogEvent(StrEnum):
     MATCH_SUCCEEDED = "match_succeeded"
     MATCH_REJECTED = "match_rejected"
     MATCH_FAILED = "match_failed"
+    EXPERIMENT_STARTED = "experiment_started"
+    EXPERIMENT_STOPPED = "experiment_stopped"
 
 
 @dataclass(frozen=True)

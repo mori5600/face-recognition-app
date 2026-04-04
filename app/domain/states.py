@@ -1,16 +1,24 @@
 from dataclasses import dataclass, field
 
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
+from app.domain.experiments import (
+    ExperimentScenario,
+    ExperimentSession,
+    ExperimentTrial,
+)
 from app.domain.ids import PersonId
 from app.domain.liveness import LivenessChallengeStep
 from app.domain.logs import AppLogEntry
 from app.domain.raw_types import RawFrame
 from app.domain.statuses import (
     CameraStatus,
+    DeferredActionKind,
+    ExperimentStatus,
     LivenessStatus,
     MatchingStatus,
     RegistrationStatus,
 )
+from app.domain.value_objects import Distance
 
 
 @dataclass(frozen=True)
@@ -47,9 +55,21 @@ class LogState:
 
 
 @dataclass(frozen=True)
+class ExperimentState:
+    status: ExperimentStatus = ExperimentStatus.IDLE
+    session: ExperimentSession | None = None
+    trials: tuple[ExperimentTrial, ...] = ()
+    latest_distance: Distance | None = None
+    last_success: bool | None = None
+    scenario: ExperimentScenario | None = None
+
+
+@dataclass(frozen=True)
 class LivenessState:
     status: LivenessStatus = LivenessStatus.IDLE
     requested_action: str | None = None
+    deferred_action: DeferredActionKind | None = None
+    deferred_name: str | None = None
     challenge_steps: tuple[LivenessChallengeStep, ...] = ()
     current_step_index: int = 0
     neutral_ready: bool = False
@@ -71,5 +91,6 @@ class AppState:
     matching: MatchingState = field(default_factory=MatchingState)
     people: PeopleState = field(default_factory=PeopleState)
     logs: LogState = field(default_factory=LogState)
+    experiment: ExperimentState = field(default_factory=ExperimentState)
     liveness: LivenessState = field(default_factory=LivenessState)
     ui: UiState = field(default_factory=UiState)

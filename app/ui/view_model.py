@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 
 from app.app.runtime import FaceRecognitionRuntime
+from app.domain.experiments import ExperimentScenario
 from app.domain.statuses import (
     CameraStatus,
+    ExperimentStatus,
     LivenessStatus,
     MatchingStatus,
     RegistrationStatus,
@@ -19,6 +21,13 @@ class MainWindowViewModel:
     people_lines: tuple[str, ...]
     result_lines: tuple[str, ...]
     log_lines: tuple[str, ...]
+    experiment_badge_text: str
+    experiment_tone: str
+    experiment_title: str
+    experiment_detail: str
+    experiment_summary_lines: tuple[str, ...]
+    experiment_scenario_labels: tuple[str, ...]
+    selected_experiment_scenario_label: str
     face_selector_labels: tuple[str, ...]
     selected_face_selector_label: str
     matching_mode_labels: tuple[str, ...]
@@ -28,6 +37,8 @@ class MainWindowViewModel:
     selected_person_label: str
     can_register: bool
     can_match: bool
+    can_start_experiment: bool
+    can_stop_experiment: bool
     can_delete_person: bool
 
 
@@ -38,6 +49,12 @@ def build_main_window_view_model(
     phase_badge_text, phase_tone, phase_title, phase_detail = _build_phase_fields(
         runtime
     )
+    (
+        experiment_badge_text,
+        experiment_tone,
+        experiment_title,
+        experiment_detail,
+    ) = _build_experiment_fields(runtime)
     return MainWindowViewModel(
         phase_badge_text=phase_badge_text,
         phase_tone=phase_tone,
@@ -51,6 +68,13 @@ def build_main_window_view_model(
         people_lines=runtime.people_lines(),
         result_lines=runtime.result_lines(),
         log_lines=runtime.log_lines(),
+        experiment_badge_text=experiment_badge_text,
+        experiment_tone=experiment_tone,
+        experiment_title=experiment_title,
+        experiment_detail=experiment_detail,
+        experiment_summary_lines=runtime.experiment_summary_lines(),
+        experiment_scenario_labels=runtime.experiment_scenario_labels(),
+        selected_experiment_scenario_label=runtime.selected_experiment_scenario_label(),
         face_selector_labels=runtime.face_selector_labels(),
         selected_face_selector_label=runtime.selected_face_selector_label(),
         matching_mode_labels=runtime.matching_mode_labels(),
@@ -60,6 +84,8 @@ def build_main_window_view_model(
         selected_person_label=runtime.selected_person_label(),
         can_register=runtime.can_target_face(),
         can_match=runtime.can_target_face() and people_count > 0,
+        can_start_experiment=runtime.can_start_experiment(),
+        can_stop_experiment=runtime.can_stop_experiment(),
         can_delete_person=people_count > 0,
     )
 
@@ -76,33 +102,6 @@ def _build_phase_fields(
             "カメラを開始してください。",
             "開始後に顔を正面へ向けてください。",
         )
-
-    if (
-        state.matching.status is MatchingStatus.SUCCESS
-        and len(state.matching.results) > 0
-    ):
-        result = state.matching.results[0]
-        if result.candidate is None:
-            return ("未登録", "neutral", "照合対象がありません。", "")
-        if result.matched:
-            return (
-                "一致",
-                "success",
-                f"{result.candidate.display_name.value} と一致しました。",
-                f"distance {result.candidate.distance.value:.3f}",
-            )
-        return (
-            "不一致",
-            "neutral",
-            "一致しませんでした。",
-            (
-                f"最も近い候補 {result.candidate.display_name.value} / "
-                f"distance {result.candidate.distance.value:.3f}"
-            ),
-        )
-
-    if state.registration.status is RegistrationStatus.SUCCESS:
-        return ("登録完了", "success", "顔を登録しました。", "")
 
     if state.liveness.status is LivenessStatus.CHALLENGE:
         step_count = len(state.liveness.challenge_steps)
@@ -143,6 +142,47 @@ def _build_phase_fields(
             "もう一度登録または照合を押してください。",
         )
 
+    if (
+        state.matching.status is MatchingStatus.SUCCESS
+        and len(state.matching.results) > 0
+    ):
+        result = state.matching.results[0]
+        if result.candidate is None:
+            return ("未登録", "neutral", "照合対象がありません。", "")
+        if result.matched:
+            return (
+                "一致",
+                "success",
+                f"{result.candidate.display_name.value} と一致しました。",
+                f"distance {result.candidate.distance.value:.3f}",
+            )
+        return (
+            "不一致",
+            "neutral",
+            "一致しませんでした。",
+            (
+                f"最も近い候補 {result.candidate.display_name.value} / "
+                f"distance {result.candidate.distance.value:.3f}"
+            ),
+        )
+
+    if state.registration.status is RegistrationStatus.SUCCESS:
+        return ("登録完了", "success", "顔を登録しました。", "")
+
+    if (
+        state.experiment.status is ExperimentStatus.ACTIVE
+        and state.experiment.session is not None
+    ):
+        return (
+            "実験中",
+            "info",
+            "照合して試行を記録してください。",
+            (
+                f"{_scenario_title(state.experiment.session.scenario)} / "
+                f"対象 {state.experiment.session.target_person_name}"
+            ),
+        )
+
     if state.matching.status is MatchingStatus.ERROR:
         return (
             "エラー",
@@ -175,3 +215,55 @@ def _camera_status_label(status: CameraStatus) -> str:
     if status is CameraStatus.ERROR:
         return "エラー"
     return "待機中"
+
+
+def _build_experiment_fields(
+    runtime: FaceRecognitionRuntime,
+) -> tuple[str, str, str, str]:
+    experiment_state = runtime.state.experiment
+    session = experiment_state.session
+
+    if session is None:
+        return (
+            "未開始",
+            "neutral",
+            "評価実験は開始していません。",
+            "対象人物を選択して開始すると、照合結果を自動で集計します。",
+        )
+
+    if experiment_state.status is ExperimentStatus.ACTIVE:
+        return (
+            "計測中",
+            "info",
+            f"{_scenario_title(session.scenario)}を実行中です。",
+            f"対象人物は {session.target_person_name} さんです。",
+        )
+
+    if experiment_state.status is ExperimentStatus.COMPLETED:
+        return (
+            "完了",
+            "success",
+            f"{_scenario_title(session.scenario)}の結果です。",
+            f"対象人物は {session.target_person_name} さんです。",
+        )
+
+    if experiment_state.status is ExperimentStatus.ABORTED:
+        return (
+            "中断",
+            "neutral",
+            "前回の評価実験は中断されました。",
+            f"対象人物は {session.target_person_name} さんです。",
+        )
+
+    return (
+        "未開始",
+        "neutral",
+        "評価実験は開始していません。",
+        "対象人物を選択して開始すると、照合結果を自動で集計します。",
+    )
+
+
+def _scenario_title(scenario: ExperimentScenario) -> str:
+    if scenario is ExperimentScenario.GENUINE:
+        return "本人受入試験"
+    return "他人拒否試験"

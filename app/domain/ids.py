@@ -36,3 +36,21 @@ class LogId:
     @classmethod
     def new(cls) -> "LogId":
         return cls(str(uuid4()))
+
+
+@dataclass(frozen=True)
+class ExperimentSessionId:
+    value: str
+
+    @classmethod
+    def new(cls) -> "ExperimentSessionId":
+        return cls(str(uuid4()))
+
+
+@dataclass(frozen=True)
+class ExperimentTrialId:
+    value: str
+
+    @classmethod
+    def new(cls) -> "ExperimentTrialId":
+        return cls(str(uuid4()))

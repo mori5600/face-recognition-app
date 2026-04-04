@@ -97,10 +97,10 @@ def detect_faces(
         except Exception as exc:
             return Failure(InfraError(f"Face feature extraction failed: {exc}"))
 
-        left = int(round(face_row[0]))
-        top = int(round(face_row[1]))
-        width = int(round(face_row[2]))
-        height = int(round(face_row[3]))
+        left = round(face_row[0])
+        top = round(face_row[1])
+        width = round(face_row[2])
+        height = round(face_row[3])
         right = min(frame_width, left + width)
         bottom = min(frame_height, top + height)
         left = max(0, left)

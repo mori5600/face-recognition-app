@@ -1,19 +1,16 @@
 from dataclasses import dataclass
-from typing import Generic, TypeAlias, TypeGuard, TypeVar
+from typing import TypeGuard
 
 from app.domain.errors import ErrorDetail
 
-T = TypeVar("T")
-E = TypeVar("E", bound=ErrorDetail)
-
 
 @dataclass(frozen=True)
-class Success(Generic[T]):
+class Success[T]:
     value: T
 
 
 @dataclass(frozen=True)
-class Failure(Generic[E]):
+class Failure[E: ErrorDetail]:
     error: E
 
     @property
@@ -21,18 +18,18 @@ class Failure(Generic[E]):
         return self.error.message
 
 
-Result: TypeAlias = Success[T] | Failure[E]
+type Result[T, E: ErrorDetail] = Success[T] | Failure[E]
 
 
-def is_failure(result: Result[T, E]) -> TypeGuard[Failure[E]]:
+def is_failure[T, E: ErrorDetail](result: Result[T, E]) -> TypeGuard[Failure[E]]:
     return isinstance(result, Failure)
 
 
-def is_success(result: Result[T, E]) -> TypeGuard[Success[T]]:
+def is_success[T, E: ErrorDetail](result: Result[T, E]) -> TypeGuard[Success[T]]:
     return isinstance(result, Success)
 
 
-def unwrap_success(result: Result[T, E]) -> T:
+def unwrap_success[T, E: ErrorDetail](result: Result[T, E]) -> T:
     if isinstance(result, Failure):
         raise RuntimeError(f"Tried to unwrap Failure: {result.message}")
     return result.value

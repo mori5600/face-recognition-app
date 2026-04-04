@@ -39,6 +39,7 @@ DANGER_SOFT = "#fef2f2"
 SUCCESS = "#006D3C"
 SUCCESS_SOFT = "#E8F5EE"
 NEUTRAL_SOFT = "#F3F4F6"
+LOG_LINE_PART_COUNT = 2
 
 
 class MainWindow(ctk.CTk):
@@ -97,6 +98,10 @@ class MainWindow(ctk.CTk):
         self._last_people_lines = ()
         self._last_result_lines = ()
         self._last_log_lines = ()
+        self._last_experiment_signature = ""
+        self._last_experiment_summary_lines = ()
+        self._last_experiment_scenario_values = ()
+        self._last_experiment_scenario_label = ""
         self._last_face_selector_values = ()
         self._last_face_selector_label = ""
         self._last_matching_mode_values = ()
@@ -105,6 +110,8 @@ class MainWindow(ctk.CTk):
         self._last_person_choice_label = ""
         self._last_register_enabled = None
         self._last_match_enabled = None
+        self._last_experiment_start_enabled = None
+        self._last_experiment_stop_enabled = None
         self._last_delete_enabled = None
 
         runtime_result = FaceRecognitionRuntime.bootstrap()
@@ -429,6 +436,165 @@ class MainWindow(ctk.CTk):
         )
         self._dashboard_panel.grid_columnconfigure(0, weight=1)
 
+        result_card = ctk.CTkFrame(
+            self._dashboard_panel,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+        )
+        result_card.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
+        result_card.grid_columnconfigure(0, weight=1)
+
+        self._result_badge = ctk.CTkLabel(
+            result_card,
+            text="待機中",
+            font=self._font_small,
+            text_color=ACCENT,
+            fg_color=ACCENT_SOFT,
+            corner_radius=8,
+            padx=10,
+            pady=4,
+        )
+        self._result_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+
+        self._result_primary_label = ctk.CTkLabel(
+            result_card,
+            text="まだ照合していません。",
+            font=self._font_body,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._result_primary_label.grid(
+            row=1, column=0, sticky="nw", padx=12, pady=(0, 4)
+        )
+
+        self._result_detail_label = ctk.CTkLabel(
+            result_card,
+            text="",
+            font=self._font_small,
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._result_detail_label.grid(
+            row=2, column=0, sticky="nw", padx=12, pady=(0, 12)
+        )
+
+        experiment_card = ctk.CTkFrame(
+            self._dashboard_panel,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+        )
+        experiment_card.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 10))
+        experiment_card.grid_columnconfigure(0, weight=1)
+
+        self._experiment_badge = ctk.CTkLabel(
+            experiment_card,
+            text="未開始",
+            font=self._font_small,
+            text_color=TEXT_PRIMARY,
+            fg_color=NEUTRAL_SOFT,
+            corner_radius=8,
+            padx=10,
+            pady=4,
+        )
+        self._experiment_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
+
+        self._experiment_title_label = ctk.CTkLabel(
+            experiment_card,
+            text="評価実験は開始していません。",
+            font=self._font_body,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._experiment_title_label.grid(
+            row=1, column=0, sticky="nw", padx=12, pady=(0, 2)
+        )
+
+        self._experiment_detail_label = ctk.CTkLabel(
+            experiment_card,
+            text="対象人物を選択して開始すると、照合結果を自動で集計します。",
+            font=self._font_small,
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._experiment_detail_label.grid(
+            row=2, column=0, sticky="nw", padx=12, pady=(0, 10)
+        )
+
+        self._experiment_scenario_menu = ctk.CTkOptionMenu(
+            experiment_card,
+            values=list(runtime.experiment_scenario_labels()),
+            command=self._handle_experiment_scenario_change,
+            font=self._font_body,
+            dropdown_font=self._font_body,
+            fg_color=CARD_BG,
+            button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER,
+            text_color=TEXT_PRIMARY,
+            corner_radius=8,
+            height=44,
+        )
+        self._experiment_scenario_menu.grid(
+            row=3, column=0, sticky="ew", padx=12, pady=(0, 8)
+        )
+
+        experiment_button_row = ctk.CTkFrame(experiment_card, fg_color="transparent")
+        experiment_button_row.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+        experiment_button_row.grid_columnconfigure(0, weight=1)
+        experiment_button_row.grid_columnconfigure(1, weight=1)
+
+        self._experiment_start_button = ctk.CTkButton(
+            experiment_button_row,
+            text="実験開始",
+            command=self._handle_start_experiment,
+            font=self._font_label,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color=CARD_BG,
+            corner_radius=8,
+            height=40,
+        )
+        self._experiment_start_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        self._experiment_stop_button = ctk.CTkButton(
+            experiment_button_row,
+            text="終了",
+            command=self._handle_stop_experiment,
+            font=self._font_label,
+            fg_color=CARD_BG,
+            hover_color=CARD_ALT_BG,
+            text_color=TEXT_PRIMARY,
+            border_width=1,
+            border_color=BORDER,
+            corner_radius=8,
+            height=40,
+        )
+        self._experiment_stop_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        self._experiment_summary_label = ctk.CTkLabel(
+            experiment_card,
+            text="未開始\n対象人物を選択して評価実験を開始します。",
+            font=self._font_small,
+            text_color=TEXT_MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._experiment_summary_label.grid(
+            row=5, column=0, sticky="nw", padx=12, pady=(0, 12)
+        )
+
         settings_card = ctk.CTkFrame(
             self._dashboard_panel,
             corner_radius=10,
@@ -436,7 +602,7 @@ class MainWindow(ctk.CTk):
             border_width=1,
             border_color=BORDER_SOFT,
         )
-        settings_card.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 10))
+        settings_card.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
         settings_card.grid_columnconfigure(0, weight=1)
 
         self._face_selector_menu = ctk.CTkOptionMenu(
@@ -504,56 +670,8 @@ class MainWindow(ctk.CTk):
         )
         self._threshold_apply_button.grid(row=0, column=1, sticky="ew")
 
-        result_card = ctk.CTkFrame(
-            self._dashboard_panel,
-            corner_radius=10,
-            fg_color=CARD_BG,
-            border_width=1,
-            border_color=BORDER_SOFT,
-        )
-        result_card.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
-        result_card.grid_columnconfigure(0, weight=1)
-
-        self._result_badge = ctk.CTkLabel(
-            result_card,
-            text="待機中",
-            font=self._font_small,
-            text_color=ACCENT,
-            fg_color=ACCENT_SOFT,
-            corner_radius=8,
-            padx=10,
-            pady=4,
-        )
-        self._result_badge.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-
-        self._result_primary_label = ctk.CTkLabel(
-            result_card,
-            text="まだ照合していません。",
-            font=self._font_body,
-            text_color=TEXT_PRIMARY,
-            anchor="w",
-            justify="left",
-            wraplength=240,
-        )
-        self._result_primary_label.grid(
-            row=1, column=0, sticky="nw", padx=12, pady=(0, 4)
-        )
-
-        self._result_detail_label = ctk.CTkLabel(
-            result_card,
-            text="",
-            font=self._font_small,
-            text_color=TEXT_MUTED,
-            anchor="w",
-            justify="left",
-            wraplength=240,
-        )
-        self._result_detail_label.grid(
-            row=2, column=0, sticky="nw", padx=12, pady=(0, 12)
-        )
-
         lower_grid = ctk.CTkFrame(self._dashboard_panel, fg_color="transparent")
-        lower_grid.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 16))
+        lower_grid.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 16))
         lower_grid.grid_columnconfigure(0, weight=1)
 
         people_card = ctk.CTkFrame(
@@ -720,6 +838,45 @@ class MainWindow(ctk.CTk):
             self._render_logs_list(view_model.log_lines)
             self._last_log_lines = view_model.log_lines
 
+        experiment_signature = "|".join(
+            (
+                view_model.experiment_badge_text,
+                view_model.experiment_tone,
+                view_model.experiment_title,
+                view_model.experiment_detail,
+            )
+        )
+        if experiment_signature != self._last_experiment_signature:
+            self._render_experiment(view_model)
+            self._last_experiment_signature = experiment_signature
+
+        if view_model.experiment_summary_lines != self._last_experiment_summary_lines:
+            self._experiment_summary_label.configure(
+                text="\n".join(view_model.experiment_summary_lines)
+            )
+            self._last_experiment_summary_lines = view_model.experiment_summary_lines
+
+        if (
+            view_model.experiment_scenario_labels
+            != self._last_experiment_scenario_values
+        ):
+            self._experiment_scenario_menu.configure(
+                values=list(view_model.experiment_scenario_labels)
+            )
+            self._last_experiment_scenario_values = (
+                view_model.experiment_scenario_labels
+            )
+        if (
+            view_model.selected_experiment_scenario_label
+            != self._last_experiment_scenario_label
+        ):
+            self._experiment_scenario_menu.set(
+                view_model.selected_experiment_scenario_label
+            )
+            self._last_experiment_scenario_label = (
+                view_model.selected_experiment_scenario_label
+            )
+
         if view_model.face_selector_labels != self._last_face_selector_values:
             self._face_selector_menu.configure(
                 values=list(view_model.face_selector_labels)
@@ -755,6 +912,16 @@ class MainWindow(ctk.CTk):
                 state="normal" if view_model.can_match else "disabled"
             )
             self._last_match_enabled = view_model.can_match
+        if view_model.can_start_experiment != self._last_experiment_start_enabled:
+            self._experiment_start_button.configure(
+                state="normal" if view_model.can_start_experiment else "disabled"
+            )
+            self._last_experiment_start_enabled = view_model.can_start_experiment
+        if view_model.can_stop_experiment != self._last_experiment_stop_enabled:
+            self._experiment_stop_button.configure(
+                state="normal" if view_model.can_stop_experiment else "disabled"
+            )
+            self._last_experiment_stop_enabled = view_model.can_stop_experiment
         if view_model.can_delete_person != self._last_delete_enabled:
             self._delete_person_button.configure(
                 state="normal" if view_model.can_delete_person else "disabled"
@@ -773,6 +940,18 @@ class MainWindow(ctk.CTk):
         )
         self._phase_title_label.configure(text=view_model.phase_title)
         self._phase_detail_label.configure(text=view_model.phase_detail)
+
+    def _render_experiment(self, view_model: MainWindowViewModel) -> None:
+        badge_fg, badge_text_color, _border = self._phase_colors(
+            view_model.experiment_tone
+        )
+        self._experiment_badge.configure(
+            text=view_model.experiment_badge_text,
+            fg_color=badge_fg,
+            text_color=badge_text_color,
+        )
+        self._experiment_title_label.configure(text=view_model.experiment_title)
+        self._experiment_detail_label.configure(text=view_model.experiment_detail)
 
     def _phase_colors(self, tone: str) -> tuple[str, str, str]:
         if tone == "success":
@@ -964,7 +1143,7 @@ class MainWindow(ctk.CTk):
             return ("履歴なし", "操作するとここに記録されます。")
 
         parts = line.split("|", 1)
-        if len(parts) != 2:
+        if len(parts) != LOG_LINE_PART_COUNT:
             return ("履歴", line)
         return (parts[0].strip(), parts[1].strip())
 
@@ -974,8 +1153,8 @@ class MainWindow(ctk.CTk):
 
         source_width, source_height = image.size
         scale = min(max_width / source_width, max_height / source_height)
-        target_width = max(1, int(round(source_width * scale)))
-        target_height = max(1, int(round(source_height * scale)))
+        target_width = max(1, round(source_width * scale))
+        target_height = max(1, round(source_height * scale))
 
         if (target_width, target_height) == image.size:
             return image
@@ -1006,6 +1185,24 @@ class MainWindow(ctk.CTk):
         if self._runtime is None:
             return
         self._runtime.match_face()
+        self._refresh_view()
+
+    def _handle_experiment_scenario_change(self, selected_label: str) -> None:
+        if self._runtime is None:
+            return
+        self._runtime.set_experiment_scenario_by_label(selected_label)
+        self._refresh_view()
+
+    def _handle_start_experiment(self) -> None:
+        if self._runtime is None:
+            return
+        self._runtime.start_experiment()
+        self._refresh_view()
+
+    def _handle_stop_experiment(self) -> None:
+        if self._runtime is None:
+            return
+        self._runtime.stop_experiment()
         self._refresh_view()
 
     def _handle_face_selector_change(self, selected_label: str) -> None:

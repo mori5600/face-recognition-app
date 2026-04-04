@@ -51,18 +51,18 @@ LINE_AA = int(getattr(cv2, "LINE_AA", 16))
 COLOR_BGR2RGB = int(getattr(cv2, "COLOR_BGR2RGB", 4))
 FR_NORM_L2 = int(getattr(cv2, "FaceRecognizerSF_FR_NORM_L2", 1))
 
-_video_capture_factory = cast(VideoCaptureFactory, getattr(cv2, "VideoCapture"))
+_video_capture_factory = cast(VideoCaptureFactory, cv2.VideoCapture)
 _face_detector_create = cast(
     FaceDetectorCreate,
-    getattr(getattr(cv2, "FaceDetectorYN"), "create"),
+    cv2.FaceDetectorYN.create,
 )
 _face_recognizer_create = cast(
     FaceRecognizerCreate,
-    getattr(getattr(cv2, "FaceRecognizerSF"), "create"),
+    cv2.FaceRecognizerSF.create,
 )
-_rectangle = cast(RectangleFn, getattr(cv2, "rectangle"))
-_put_text = cast(PutTextFn, getattr(cv2, "putText"))
-_cvt_color = cast(CvtColorFn, getattr(cv2, "cvtColor"))
+_rectangle = cast(RectangleFn, cv2.rectangle)
+_put_text = cast(PutTextFn, cv2.putText)
+_cvt_color = cast(CvtColorFn, cv2.cvtColor)
 
 
 def create_video_capture(camera_index: int, backend: int) -> VideoCaptureProtocol:

@@ -1,6 +1,6 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -119,7 +119,7 @@ class Timestamp:
 
     @classmethod
     def now(cls) -> "Timestamp":
-        return cls(datetime.now(timezone.utc))
+        return cls(datetime.now(UTC))
 
     @classmethod
     def create(cls, raw: datetime) -> Result["Timestamp", DomainError]:

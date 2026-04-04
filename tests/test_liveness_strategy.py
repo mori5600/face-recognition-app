@@ -8,12 +8,14 @@ from app.strategy.liveness import (
     evaluate_liveness_step,
 )
 
+EXPECTED_STEP_COUNT = 2
+
 
 def test_create_liveness_challenge_steps_returns_unique_steps() -> None:
-    steps = create_liveness_challenge_steps(step_count=2)
+    steps = create_liveness_challenge_steps(step_count=EXPECTED_STEP_COUNT)
 
-    assert len(steps) == 2
-    assert len({step.kind for step in steps}) == 2
+    assert len(steps) == EXPECTED_STEP_COUNT
+    assert len({step.kind for step in steps}) == EXPECTED_STEP_COUNT
 
 
 def test_blink_step_requires_neutral_then_trigger() -> None:

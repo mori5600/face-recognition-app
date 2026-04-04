@@ -4,17 +4,17 @@ from app.app.commands import (
     DownloadModelsCommand,
     UiCommand,
 )
+from app.domain.results import is_failure, unwrap_success
+from app.gateways.camera_gateway import close_camera, open_camera, read_frame
+from app.gateways.face_gateway import OpenCvFaceEngineConfig, load_face_engine
 from app.gateways.liveness_gateway import (
     MediaPipeLivenessEngineConfig,
     close_liveness_engine,
     load_liveness_engine,
 )
-from app.gateways.camera_gateway import close_camera, open_camera, read_frame
-from app.gateways.face_gateway import OpenCvFaceEngineConfig, load_face_engine
 from app.gateways.sqlite_gateway import initialize_database, load_people
 from app.infra.app_paths import AppPaths
 from app.infra.download_models import download_models
-from app.domain.results import is_failure, unwrap_success
 from app.ui.main_window import MainWindow
 
 

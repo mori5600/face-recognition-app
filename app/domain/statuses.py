@@ -26,3 +26,15 @@ class LivenessStatus(StrEnum):
     VERIFIED = "verified"
     FAILED = "failed"
     EXPIRED = "expired"
+
+
+class ExperimentStatus(StrEnum):
+    IDLE = "idle"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+
+
+class DeferredActionKind(StrEnum):
+    MATCH = "match"
+    REGISTER = "register"

@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from app.domain.entities import DetectedFace, MatchCandidate, MatchResult
 from app.domain.errors import DomainError
