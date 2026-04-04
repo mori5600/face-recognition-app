@@ -21,3 +21,10 @@ class CameraCheckCommand:
     """Capture one frame from a local camera."""
 
     camera_index: int = 0
+
+
+@dataclass(frozen=True)
+class AnalysisReportCommand:
+    """Generate an analysis report from SQLite data."""
+
+    open_browser: bool = False

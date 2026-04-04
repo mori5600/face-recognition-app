@@ -5,6 +5,7 @@ from datetime import datetime
 
 import numpy as np
 
+from app.domain.analysis import AnalysisSession, AnalysisSnapshot, AnalysisTrial
 from app.domain.entities import RegisteredPerson
 from app.domain.errors import InfraError
 from app.domain.experiments import (
@@ -143,57 +144,98 @@ def load_recent_logs(
         return Failure(InfraError(f"Failed to load event logs from SQLite: {exc}"))
 
     entries: list[AppLogEntry] = []
-    for (
-        log_id,
-        created_at,
-        level,
-        event_type,
-        message,
-        person_id,
-        person_name,
-        distance,
-    ) in log_rows:
-        created_at_result = Timestamp.create(datetime.fromisoformat(created_at))
-        if is_failure(created_at_result):
-            return Failure(
-                InfraError(
-                    f"Invalid created_at stored for log {log_id}: {created_at_result.message}"
-                ),
-            )
-        distance_value: Distance | None = None
-        if distance is not None:
-            distance_result = Distance.create(float(distance))
-            if is_failure(distance_result):
-                return Failure(
-                    InfraError(
-                        f"Invalid distance stored for log {log_id}: {distance_result.message}"
-                    ),
-                )
-            distance_value = unwrap_success(distance_result)
-        try:
-            log_level = AppLogLevel(level)
-            log_event = AppLogEvent(event_type)
-        except ValueError as exc:
-            return Failure(
-                InfraError(
-                    f"Invalid event log enum value stored for log {log_id}: {exc}"
-                )
-            )
-
-        entries.append(
-            AppLogEntry(
-                log_id=LogId(log_id),
-                created_at=unwrap_success(created_at_result),
-                level=log_level,
-                event=log_event,
-                message=message,
-                person_id=PersonId(person_id) if person_id is not None else None,
-                person_name=person_name,
-                distance=distance_value,
-            )
-        )
+    for log_row in log_rows:
+        entry_result = _decode_log_row(log_row)
+        if is_failure(entry_result):
+            return Failure(entry_result.error)
+        entries.append(unwrap_success(entry_result))
 
     return Success(LogState(entries=tuple(entries)))
+
+
+def load_analysis_snapshot(paths: AppPaths) -> Result[AnalysisSnapshot, InfraError]:
+    people_result = load_people(paths)
+    if is_failure(people_result):
+        return people_result
+    people_state = unwrap_success(people_result)
+
+    try:
+        with closing(sqlite3.connect(paths.database_path)) as connection:
+            log_rows = connection.execute(
+                """
+                SELECT log_id, created_at, level, event_type, message, person_id, person_name, distance
+                FROM event_logs
+                ORDER BY created_at ASC
+                """,
+            ).fetchall()
+            session_rows = connection.execute(
+                """
+                SELECT
+                    session_id,
+                    started_at,
+                    completed_at,
+                    status,
+                    scenario,
+                    target_person_id,
+                    target_person_name,
+                    face_selector_key,
+                    matching_mode_key,
+                    threshold
+                FROM experiment_sessions
+                ORDER BY started_at ASC
+                """,
+            ).fetchall()
+            trial_rows = connection.execute(
+                """
+                SELECT
+                    trial_id,
+                    session_id,
+                    created_at,
+                    matched,
+                    accepted_as_target,
+                    success,
+                    candidate_person_id,
+                    candidate_person_name,
+                    distance
+                FROM experiment_trials
+                ORDER BY created_at ASC
+                """,
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return Failure(InfraError(f"Failed to load analysis data from SQLite: {exc}"))
+
+    logs: list[AppLogEntry] = []
+    for log_row in log_rows:
+        entry_result = _decode_log_row(log_row)
+        if is_failure(entry_result):
+            return Failure(entry_result.error)
+        logs.append(unwrap_success(entry_result))
+
+    sessions: list[AnalysisSession] = []
+    sessions_by_id: dict[ExperimentSessionId, AnalysisSession] = {}
+    for session_row in session_rows:
+        session_result = _decode_analysis_session(session_row)
+        if is_failure(session_result):
+            return Failure(session_result.error)
+        analysis_session = unwrap_success(session_result)
+        sessions.append(analysis_session)
+        sessions_by_id[analysis_session.session.session_id] = analysis_session
+
+    trials: list[AnalysisTrial] = []
+    for trial_row in trial_rows:
+        trial_result = _decode_analysis_trial(trial_row, sessions_by_id)
+        if is_failure(trial_result):
+            return Failure(trial_result.error)
+        trials.append(unwrap_success(trial_result))
+
+    return Success(
+        AnalysisSnapshot(
+            people=people_state.persons,
+            logs=tuple(logs),
+            sessions=tuple(sessions),
+            trials=tuple(trials),
+        )
+    )
 
 
 def load_latest_experiment(paths: AppPaths) -> Result[ExperimentState, InfraError]:
@@ -545,6 +587,129 @@ def delete_person(paths: AppPaths, person_id: PersonId) -> Result[None, InfraErr
         return Failure(InfraError(f"Failed to delete a person from SQLite: {exc}"))
 
     return Success(None)
+
+
+def _decode_log_row(
+    row: tuple[object, ...],
+) -> Result[AppLogEntry, InfraError]:
+    (
+        log_id,
+        created_at,
+        level,
+        event_type,
+        message,
+        person_id,
+        person_name,
+        distance,
+    ) = row
+
+    created_at_result = Timestamp.create(datetime.fromisoformat(str(created_at)))
+    if is_failure(created_at_result):
+        return Failure(
+            InfraError(
+                f"Invalid created_at stored for log {log_id}: {created_at_result.message}"
+            ),
+        )
+    distance_value: Distance | None = None
+    if distance is not None:
+        if not isinstance(distance, (float, int, str)):
+            return Failure(
+                InfraError(
+                    f"Invalid distance type stored for log {log_id}: {type(distance).__name__}"
+                )
+            )
+        distance_result = Distance.create(float(distance))
+        if is_failure(distance_result):
+            return Failure(
+                InfraError(
+                    f"Invalid distance stored for log {log_id}: {distance_result.message}"
+                ),
+            )
+        distance_value = unwrap_success(distance_result)
+    try:
+        log_level = AppLogLevel(str(level))
+        log_event = AppLogEvent(str(event_type))
+    except ValueError as exc:
+        return Failure(
+            InfraError(f"Invalid event log enum value stored for log {log_id}: {exc}")
+        )
+
+    return Success(
+        AppLogEntry(
+            log_id=LogId(str(log_id)),
+            created_at=unwrap_success(created_at_result),
+            level=log_level,
+            event=log_event,
+            message=str(message),
+            person_id=PersonId(str(person_id)) if person_id is not None else None,
+            person_name=str(person_name) if person_name is not None else None,
+            distance=distance_value,
+        )
+    )
+
+
+def _decode_analysis_session(
+    row: tuple[object, ...],
+) -> Result[AnalysisSession, InfraError]:
+    session_result = _decode_experiment_session(row)
+    if is_failure(session_result):
+        return session_result
+    session = unwrap_success(session_result)
+    try:
+        status = ExperimentStatus(str(row[3]))
+    except ValueError as exc:
+        return Failure(
+            InfraError(f"Invalid experiment status stored for session {row[0]}: {exc}")
+        )
+    return Success(AnalysisSession(session=session, status=status))
+
+
+def _decode_analysis_trial(
+    row: tuple[object, ...],
+    sessions_by_id: dict[ExperimentSessionId, AnalysisSession],
+) -> Result[AnalysisTrial, InfraError]:
+    (
+        _trial_id,
+        session_id,
+        created_at,
+        matched,
+        accepted_as_target,
+        success,
+        candidate_person_id,
+        candidate_person_name,
+        distance,
+    ) = row
+    session_key = ExperimentSessionId(str(session_id))
+    analysis_session = sessions_by_id.get(session_key)
+    if analysis_session is None:
+        return Failure(
+            InfraError(f"Unknown session_id stored for experiment trial: {session_id}")
+        )
+    trial_result = _decode_experiment_trial(
+        analysis_session.session.session_id,
+        (
+            row[0],
+            created_at,
+            matched,
+            accepted_as_target,
+            success,
+            candidate_person_id,
+            candidate_person_name,
+            distance,
+        ),
+    )
+    if is_failure(trial_result):
+        return trial_result
+    trial = unwrap_success(trial_result)
+    return Success(
+        AnalysisTrial(
+            trial=trial,
+            scenario=analysis_session.session.scenario,
+            target_person_id=analysis_session.session.target_person_id,
+            target_person_name=analysis_session.session.target_person_name,
+            threshold=analysis_session.session.threshold,
+        )
+    )
 
 
 def _decode_experiment_session(

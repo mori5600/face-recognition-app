@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import numpy as np
 
+from app.app.analysis_report import write_analysis_report
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.errors import AppError, DomainError
 from app.domain.experiments import (
@@ -1085,6 +1086,25 @@ class FaceRecognitionRuntime:
                 return Success(self._state)
 
         return Failure(AppError(f"Unknown person label: {label}"))
+
+    def open_analysis_report(self) -> Result[AppState, AppError]:
+        report_result = write_analysis_report(self._paths, open_in_browser=True)
+        if is_failure(report_result):
+            self._state = replace(
+                self._state,
+                ui=replace(self._state.ui, message=report_result.message),
+            )
+            return Failure(AppError(report_result.message))
+
+        report_path = unwrap_success(report_result)
+        self._state = replace(
+            self._state,
+            ui=replace(
+                self._state.ui,
+                message=f"解析レポートを開きました: {report_path.name}",
+            ),
+        )
+        return Success(self._state)
 
     def _registration_failure(self, message: str) -> Result[AppState, AppError]:
         self._state = replace(

@@ -595,6 +595,21 @@ class MainWindow(ctk.CTk):
             row=5, column=0, sticky="nw", padx=12, pady=(0, 12)
         )
 
+        self._analysis_button = ctk.CTkButton(
+            experiment_card,
+            text="解析レポートを開く",
+            command=self._handle_open_analysis_report,
+            font=self._font_label,
+            fg_color=CARD_BG,
+            hover_color=ACCENT_SOFT,
+            text_color=ACCENT,
+            border_width=1,
+            border_color=ACCENT,
+            corner_radius=8,
+            height=40,
+        )
+        self._analysis_button.grid(row=6, column=0, sticky="ew", padx=12, pady=(0, 12))
+
         settings_card = ctk.CTkFrame(
             self._dashboard_panel,
             corner_radius=10,
@@ -1203,6 +1218,12 @@ class MainWindow(ctk.CTk):
         if self._runtime is None:
             return
         self._runtime.stop_experiment()
+        self._refresh_view()
+
+    def _handle_open_analysis_report(self) -> None:
+        if self._runtime is None:
+            return
+        self._runtime.open_analysis_report()
         self._refresh_view()
 
     def _handle_face_selector_change(self, selected_label: str) -> None:

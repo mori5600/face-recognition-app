@@ -1,4 +1,6 @@
+from app.app.analysis_report import write_analysis_report
 from app.app.commands import (
+    AnalysisReportCommand,
     CameraCheckCommand,
     DoctorCommand,
     DownloadModelsCommand,
@@ -97,6 +99,17 @@ def handle_camera_check(command: CameraCheckCommand) -> int:
         close_result = close_camera(handle)
         if is_failure(close_result):
             print(f"[WARN] {close_result.message}")
+
+
+def handle_analysis_report(command: AnalysisReportCommand) -> int:
+    paths = AppPaths.default()
+    result = write_analysis_report(paths, open_in_browser=command.open_browser)
+    if is_failure(result):
+        print(f"[ERROR] {result.message}")
+        return 1
+    report_path = unwrap_success(result)
+    print(f"[OK] Analysis report is ready: {report_path}")
+    return 0
 
 
 def handle_ui(_: UiCommand) -> int:

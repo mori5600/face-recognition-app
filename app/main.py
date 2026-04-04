@@ -1,12 +1,14 @@
 import argparse
 
 from app.app.commands import (
+    AnalysisReportCommand,
     CameraCheckCommand,
     DoctorCommand,
     DownloadModelsCommand,
     UiCommand,
 )
 from app.app.handlers import (
+    handle_analysis_report,
     handle_camera_check,
     handle_doctor,
     handle_download_models,
@@ -26,6 +28,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "download-models",
         help="Download the official YuNet, SFace, and Face Landmarker models into ./models.",
+    )
+    analysis_parser = subparsers.add_parser(
+        "analysis-report",
+        help="Generate an HTML analysis report from SQLite data.",
+    )
+    analysis_parser.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_browser",
+        help="Open the generated report in the default browser.",
     )
 
     camera_parser = subparsers.add_parser(
@@ -47,6 +59,10 @@ def main() -> int:
         return handle_doctor(DoctorCommand())
     if args.command == "download-models":
         return handle_download_models(DownloadModelsCommand())
+    if args.command == "analysis-report":
+        return handle_analysis_report(
+            AnalysisReportCommand(open_browser=args.open_browser)
+        )
     if args.command == "camera-check":
         return handle_camera_check(CameraCheckCommand(camera_index=args.camera_index))
 
