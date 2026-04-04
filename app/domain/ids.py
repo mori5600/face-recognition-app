@@ -27,3 +27,12 @@ class EncodingId:
     @classmethod
     def new(cls) -> "EncodingId":
         return cls(str(uuid4()))
+
+
+@dataclass(frozen=True)
+class LogId:
+    value: str
+
+    @classmethod
+    def new(cls) -> "LogId":
+        return cls(str(uuid4()))

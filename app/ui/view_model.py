@@ -18,6 +18,7 @@ class MainWindowViewModel:
     summary_text: str
     people_lines: tuple[str, ...]
     result_lines: tuple[str, ...]
+    log_lines: tuple[str, ...]
     face_selector_labels: tuple[str, ...]
     selected_face_selector_label: str
     matching_mode_labels: tuple[str, ...]
@@ -49,6 +50,7 @@ def build_main_window_view_model(
         ),
         people_lines=runtime.people_lines(),
         result_lines=runtime.result_lines(),
+        log_lines=runtime.log_lines(),
         face_selector_labels=runtime.face_selector_labels(),
         selected_face_selector_label=runtime.selected_face_selector_label(),
         matching_mode_labels=runtime.matching_mode_labels(),

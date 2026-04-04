@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.ids import PersonId
 from app.domain.liveness import LivenessChallengeStep
+from app.domain.logs import AppLogEntry
 from app.domain.raw_types import RawFrame
 from app.domain.statuses import (
     CameraStatus,
@@ -41,6 +42,11 @@ class PeopleState:
 
 
 @dataclass(frozen=True)
+class LogState:
+    entries: tuple[AppLogEntry, ...] = ()
+
+
+@dataclass(frozen=True)
 class LivenessState:
     status: LivenessStatus = LivenessStatus.IDLE
     requested_action: str | None = None
@@ -64,5 +70,6 @@ class AppState:
     registration: RegistrationState = field(default_factory=RegistrationState)
     matching: MatchingState = field(default_factory=MatchingState)
     people: PeopleState = field(default_factory=PeopleState)
+    logs: LogState = field(default_factory=LogState)
     liveness: LivenessState = field(default_factory=LivenessState)
     ui: UiState = field(default_factory=UiState)

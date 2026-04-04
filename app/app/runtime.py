@@ -5,13 +5,15 @@ import numpy as np
 
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.errors import AppError, DomainError
-from app.domain.ids import PersonId
+from app.domain.ids import LogId, PersonId
 from app.domain.liveness import LivenessChallengeStep
+from app.domain.logs import AppLogEntry, AppLogEvent, AppLogLevel
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
 from app.domain.states import (
     AppState,
     CameraState,
     LivenessState,
+    LogState,
     MatchingState,
     PeopleState,
     RegistrationState,
@@ -48,7 +50,9 @@ from app.gateways.sqlite_gateway import (
     delete_person,
     initialize_database,
     insert_encoding,
+    insert_log,
     insert_person,
+    load_recent_logs,
     load_people,
     update_person_updated_at,
 )
@@ -90,6 +94,7 @@ MATCHING_MODE_LABELS = {
 MATCHING_MODE_BY_LABEL = {label: key for key, label in MATCHING_MODE_LABELS.items()}
 
 DEFAULT_MATCHING_THRESHOLD = 1.128
+RECENT_LOG_LIMIT = 50
 LIVENESS_TIMEOUT_MS = 8_000
 LIVENESS_VERIFIED_WINDOW_MS = 8_000
 
@@ -154,11 +159,18 @@ class FaceRecognitionRuntime:
             return Failure(AppError(people_result.message))
         people = unwrap_success(people_result)
 
+        logs_result = load_recent_logs(resolved_paths, limit=RECENT_LOG_LIMIT)
+        if is_failure(logs_result):
+            close_liveness_engine(liveness_engine)
+            return Failure(AppError(logs_result.message))
+        logs = unwrap_success(logs_result)
+
         selected_person_id = (
             people.persons[0].person_id if len(people.persons) > 0 else None
         )
         initial_state = AppState(
             people=people,
+            logs=logs,
             ui=UiState(
                 message="準備完了です。カメラを開始してください。",
                 selected_person_id=selected_person_id,
@@ -212,6 +224,11 @@ class FaceRecognitionRuntime:
                 ),
                 ui=replace(self._state.ui, message=open_result.message),
             )
+            self._record_log(
+                AppLogLevel.ERROR,
+                AppLogEvent.CAMERA_ERROR,
+                open_result.message,
+            )
             return Failure(AppError(open_result.message))
         camera_handle = unwrap_success(open_result)
 
@@ -225,6 +242,11 @@ class FaceRecognitionRuntime:
             ),
             liveness=_idle_liveness_state(),
             ui=replace(self._state.ui, message="カメラを開始しました。"),
+        )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.CAMERA_STARTED,
+            "カメラを開始しました。",
         )
         return Success(self._state)
 
@@ -256,6 +278,11 @@ class FaceRecognitionRuntime:
                 ),
                 ui=replace(self._state.ui, message=close_result.message),
             )
+            self._record_log(
+                AppLogLevel.ERROR,
+                AppLogEvent.CAMERA_ERROR,
+                close_result.message,
+            )
             return Failure(AppError(close_result.message))
 
         self._state = replace(
@@ -269,6 +296,11 @@ class FaceRecognitionRuntime:
             ),
             liveness=_idle_liveness_state(),
             ui=replace(self._state.ui, message="カメラを停止しました。"),
+        )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.CAMERA_STOPPED,
+            "カメラを停止しました。",
         )
         return Success(self._state)
 
@@ -287,6 +319,11 @@ class FaceRecognitionRuntime:
                 ),
                 ui=replace(self._state.ui, message=frame_result.message),
             )
+            self._record_log(
+                AppLogLevel.ERROR,
+                AppLogEvent.CAMERA_ERROR,
+                frame_result.message,
+            )
             return Failure(AppError(frame_result.message))
         frame = unwrap_success(frame_result)
 
@@ -302,10 +339,16 @@ class FaceRecognitionRuntime:
                 ),
                 ui=replace(self._state.ui, message=face_result.message),
             )
+            self._record_log(
+                AppLogLevel.ERROR,
+                AppLogEvent.CAMERA_ERROR,
+                face_result.message,
+            )
             return Failure(AppError(face_result.message))
         detected_faces = unwrap_success(face_result)
 
-        liveness_state = self._state.liveness
+        previous_liveness_state = self._state.liveness
+        liveness_state = previous_liveness_state
         next_message: str | None = None
 
         if (
@@ -319,6 +362,7 @@ class FaceRecognitionRuntime:
                 current_step_index=0,
                 neutral_ready=False,
                 verified_until_ms=None,
+                last_error="生体確認の有効時間が切れました。",
             )
 
         if self._state.liveness.status is LivenessStatus.CHALLENGE:
@@ -348,6 +392,7 @@ class FaceRecognitionRuntime:
                 else self._state.ui
             ),
         )
+        self._record_liveness_transition(previous_liveness_state, liveness_state)
         return Success(self._state)
 
     def register_face(self, draft_name: str) -> Result[AppState, AppError]:
@@ -401,6 +446,13 @@ class FaceRecognitionRuntime:
                     selected_person_id=person.person_id,
                 ),
             )
+            self._record_log(
+                AppLogLevel.INFO,
+                AppLogEvent.PERSON_REGISTERED,
+                f"{person.display_name.value} さんを新規登録しました。",
+                person_id=person.person_id,
+                person_name=person.display_name.value,
+            )
             return Success(self._state)
 
         insert_encoding_result = insert_encoding(
@@ -442,6 +494,13 @@ class FaceRecognitionRuntime:
                 selected_person_id=updated_person.person_id,
             ),
         )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.PERSON_UPDATED,
+            f"{updated_person.display_name.value} さんに特徴量を追加しました。",
+            person_id=updated_person.person_id,
+            person_name=updated_person.display_name.value,
+        )
         return Success(self._state)
 
     def match_face(self) -> Result[AppState, AppError]:
@@ -482,6 +541,7 @@ class FaceRecognitionRuntime:
                 selected_person_id=selected_person_id,
             ),
         )
+        self._record_match_result(result)
         return Success(self._state)
 
     def delete_selected_person(self) -> Result[AppState, AppError]:
@@ -514,6 +574,13 @@ class FaceRecognitionRuntime:
                 message=f"{selected_person.display_name.value} さんを削除しました。",
                 selected_person_id=next_selected_person_id,
             ),
+        )
+        self._record_log(
+            AppLogLevel.INFO,
+            AppLogEvent.PERSON_DELETED,
+            f"{selected_person.display_name.value} さんを削除しました。",
+            person_id=selected_person.person_id,
+            person_name=selected_person.display_name.value,
         )
         return Success(self._state)
 
@@ -576,6 +643,12 @@ class FaceRecognitionRuntime:
         return tuple(
             _build_match_message(result) for result in self._state.matching.results
         )
+
+    def log_lines(self) -> tuple[str, ...]:
+        if len(self._state.logs.entries) == 0:
+            return ("まだ履歴はありません。",)
+
+        return tuple(_format_log_line(entry) for entry in self._state.logs.entries[:8])
 
     def status_lines(self) -> tuple[str, ...]:
         return (
@@ -712,7 +785,120 @@ class FaceRecognitionRuntime:
             ),
             ui=replace(self._state.ui, message=message),
         )
+        self._record_log(
+            AppLogLevel.ERROR,
+            AppLogEvent.MATCH_FAILED,
+            message,
+        )
         return Failure(AppError(message))
+
+    def _record_log(
+        self,
+        level: AppLogLevel,
+        event: AppLogEvent,
+        message: str,
+        person_id: PersonId | None = None,
+        person_name: str | None = None,
+        distance: Distance | None = None,
+    ) -> None:
+        entry = AppLogEntry(
+            log_id=LogId.new(),
+            created_at=Timestamp.now(),
+            level=level,
+            event=event,
+            message=message,
+            person_id=person_id,
+            person_name=person_name,
+            distance=distance,
+        )
+        insert_result = insert_log(self._paths, entry)
+        if is_failure(insert_result):
+            return
+
+        self._state = replace(
+            self._state,
+            logs=LogState(
+                entries=(entry,) + self._state.logs.entries[: RECENT_LOG_LIMIT - 1],
+            ),
+        )
+
+    def _record_liveness_transition(
+        self,
+        previous_state: LivenessState,
+        current_state: LivenessState,
+    ) -> None:
+        if (
+            previous_state.status is not LivenessStatus.CHALLENGE
+            and current_state.status is LivenessStatus.CHALLENGE
+        ):
+            self._record_log(
+                AppLogLevel.INFO,
+                AppLogEvent.LIVENESS_STARTED,
+                _build_liveness_message(current_state),
+            )
+            return
+
+        if (
+            previous_state.status is not LivenessStatus.VERIFIED
+            and current_state.status is LivenessStatus.VERIFIED
+        ):
+            self._record_log(
+                AppLogLevel.INFO,
+                AppLogEvent.LIVENESS_VERIFIED,
+                "生体確認が完了しました。",
+            )
+            return
+
+        if (
+            previous_state.status is not LivenessStatus.FAILED
+            and current_state.status is LivenessStatus.FAILED
+        ):
+            self._record_log(
+                AppLogLevel.WARNING,
+                AppLogEvent.LIVENESS_FAILED,
+                current_state.last_error or "生体確認に失敗しました。",
+            )
+            return
+
+        if (
+            previous_state.status is LivenessStatus.VERIFIED
+            and current_state.status is LivenessStatus.EXPIRED
+        ):
+            self._record_log(
+                AppLogLevel.WARNING,
+                AppLogEvent.LIVENESS_EXPIRED,
+                current_state.last_error or "生体確認の有効時間が切れました。",
+            )
+
+    def _record_match_result(self, result: MatchResult) -> None:
+        candidate = result.candidate
+        if candidate is None:
+            self._record_log(
+                AppLogLevel.WARNING,
+                AppLogEvent.MATCH_FAILED,
+                "登録済みの人物がいないため照合できませんでした。",
+            )
+            return
+
+        if result.matched:
+            self._record_log(
+                AppLogLevel.INFO,
+                AppLogEvent.MATCH_SUCCEEDED,
+                f"{candidate.display_name.value} と一致しました。",
+                person_id=candidate.person_id,
+                person_name=candidate.display_name.value,
+                distance=candidate.distance,
+            )
+            return
+
+        self._record_log(
+            AppLogLevel.WARNING,
+            AppLogEvent.MATCH_REJECTED,
+            f"一致しませんでした。最も近い候補は {candidate.display_name.value} です。",
+            person_id=candidate.person_id,
+            person_name=candidate.display_name.value,
+            distance=candidate.distance,
+        )
 
     def _find_person_by_name(self, display_name: str) -> RegisteredPerson | None:
         for person in self._state.people.persons:
@@ -758,7 +944,8 @@ class FaceRecognitionRuntime:
 
     def _ensure_liveness_verified(self, action_label: str) -> Result[None, AppError]:
         now_ms = _now_ms()
-        liveness_state = self._state.liveness
+        previous_liveness_state = self._state.liveness
+        liveness_state = previous_liveness_state
 
         if (
             liveness_state.status is LivenessStatus.VERIFIED
@@ -777,6 +964,7 @@ class FaceRecognitionRuntime:
             liveness=liveness_state,
             ui=replace(self._state.ui, message=message),
         )
+        self._record_liveness_transition(previous_liveness_state, liveness_state)
         return Failure(AppError(message))
 
     def _begin_liveness_challenge(
@@ -854,7 +1042,10 @@ class FaceRecognitionRuntime:
                 last_error=None,
             )
             return Success(
-                (verified_state, "生体確認が完了しました。登録または照合を実行してください。")
+                (
+                    verified_state,
+                    "生体確認が完了しました。登録または照合を実行してください。",
+                )
             )
 
         next_state = replace(
@@ -918,6 +1109,13 @@ def _build_match_message(result: MatchResult) -> str:
     if result.matched:
         return f"一致: {result.candidate.display_name.value} (distance={distance:.3f})"
     return f"不一致: 最も近い候補は {result.candidate.display_name.value} (distance={distance:.3f})"
+
+
+def _format_log_line(entry: AppLogEntry) -> str:
+    timestamp_text = entry.created_at.value.astimezone().strftime("%m/%d %H:%M:%S")
+    if entry.distance is None:
+        return f"{timestamp_text} | {entry.message}"
+    return f"{timestamp_text} | {entry.message} / distance {entry.distance.value:.3f}"
 
 
 def _active_liveness_step(

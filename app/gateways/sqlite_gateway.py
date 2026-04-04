@@ -7,11 +7,14 @@ import numpy as np
 
 from app.domain.entities import RegisteredPerson
 from app.domain.errors import InfraError
-from app.domain.ids import EncodingId, PersonId
+from app.domain.ids import EncodingId, LogId, PersonId
+from app.domain.logs import AppLogEntry, AppLogEvent, AppLogLevel
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
-from app.domain.states import PeopleState
-from app.domain.value_objects import DisplayName, FaceEncoding, Timestamp
+from app.domain.states import LogState, PeopleState
+from app.domain.value_objects import DisplayName, Distance, FaceEncoding, Timestamp
 from app.infra.app_paths import AppPaths
+
+LOG_RETENTION_LIMIT = 5000
 
 
 def initialize_database(paths: AppPaths) -> Result[None, InfraError]:
@@ -109,6 +112,78 @@ def load_people(paths: AppPaths) -> Result[PeopleState, InfraError]:
     return Success(PeopleState(persons=tuple(persons)))
 
 
+def load_recent_logs(
+    paths: AppPaths,
+    limit: int = 50,
+) -> Result[LogState, InfraError]:
+    try:
+        with closing(sqlite3.connect(paths.database_path)) as connection:
+            log_rows = connection.execute(
+                """
+                SELECT log_id, created_at, level, event_type, message, person_id, person_name, distance
+                FROM event_logs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return Failure(InfraError(f"Failed to load event logs from SQLite: {exc}"))
+
+    entries: list[AppLogEntry] = []
+    for (
+        log_id,
+        created_at,
+        level,
+        event_type,
+        message,
+        person_id,
+        person_name,
+        distance,
+    ) in log_rows:
+        created_at_result = Timestamp.create(datetime.fromisoformat(created_at))
+        if is_failure(created_at_result):
+            return Failure(
+                InfraError(
+                    f"Invalid created_at stored for log {log_id}: {created_at_result.message}"
+                ),
+            )
+        distance_value: Distance | None = None
+        if distance is not None:
+            distance_result = Distance.create(float(distance))
+            if is_failure(distance_result):
+                return Failure(
+                    InfraError(
+                        f"Invalid distance stored for log {log_id}: {distance_result.message}"
+                    ),
+                )
+            distance_value = unwrap_success(distance_result)
+        try:
+            log_level = AppLogLevel(level)
+            log_event = AppLogEvent(event_type)
+        except ValueError as exc:
+            return Failure(
+                InfraError(
+                    f"Invalid event log enum value stored for log {log_id}: {exc}"
+                )
+            )
+
+        entries.append(
+            AppLogEntry(
+                log_id=LogId(log_id),
+                created_at=unwrap_success(created_at_result),
+                level=log_level,
+                event=log_event,
+                message=message,
+                person_id=PersonId(person_id) if person_id is not None else None,
+                person_name=person_name,
+                distance=distance_value,
+            )
+        )
+
+    return Success(LogState(entries=tuple(entries)))
+
+
 def insert_person(
     paths: AppPaths, person: RegisteredPerson
 ) -> Result[None, InfraError]:
@@ -129,6 +204,53 @@ def insert_person(
             connection.commit()
     except sqlite3.Error as exc:
         return Failure(InfraError(f"Failed to insert a person into SQLite: {exc}"))
+
+    return Success(None)
+
+
+def insert_log(paths: AppPaths, entry: AppLogEntry) -> Result[None, InfraError]:
+    try:
+        with closing(sqlite3.connect(paths.database_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO event_logs (
+                    log_id,
+                    created_at,
+                    level,
+                    event_type,
+                    message,
+                    person_id,
+                    person_name,
+                    distance
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.log_id.value,
+                    entry.created_at.value.isoformat(),
+                    entry.level.value,
+                    entry.event.value,
+                    entry.message,
+                    entry.person_id.value if entry.person_id is not None else None,
+                    entry.person_name,
+                    entry.distance.value if entry.distance is not None else None,
+                ),
+            )
+            connection.execute(
+                """
+                DELETE FROM event_logs
+                WHERE log_id NOT IN (
+                    SELECT log_id
+                    FROM event_logs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                )
+                """,
+                (LOG_RETENTION_LIMIT,),
+            )
+            connection.commit()
+    except sqlite3.Error as exc:
+        return Failure(InfraError(f"Failed to insert an event log into SQLite: {exc}"))
 
     return Success(None)
 

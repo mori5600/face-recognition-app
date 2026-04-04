@@ -96,6 +96,7 @@ class MainWindow(ctk.CTk):
         self._last_summary_text = ""
         self._last_people_lines = ()
         self._last_result_lines = ()
+        self._last_log_lines = ()
         self._last_face_selector_values = ()
         self._last_face_selector_label = ""
         self._last_matching_mode_values = ()
@@ -610,6 +611,38 @@ class MainWindow(ctk.CTk):
         self._people_list.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         self._people_list.grid_columnconfigure(0, weight=1)
 
+        log_card = ctk.CTkFrame(
+            lower_grid,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+        )
+        log_card.grid(row=1, column=0, sticky="ew")
+        log_card.grid_columnconfigure(0, weight=1)
+
+        log_title = ctk.CTkLabel(
+            log_card,
+            text="履歴",
+            font=self._font_label,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+        )
+        log_title.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
+
+        self._log_list = ctk.CTkScrollableFrame(
+            log_card,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_width=1,
+            border_color=BORDER_SOFT,
+            height=180,
+            scrollbar_button_color="#9ca3af",
+            scrollbar_button_hover_color="#6b7280",
+        )
+        self._log_list.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self._log_list.grid_columnconfigure(0, weight=1)
+
     def _require_runtime(self) -> FaceRecognitionRuntime:
         runtime = self._runtime
         if runtime is None:
@@ -682,6 +715,10 @@ class MainWindow(ctk.CTk):
         if view_model.result_lines != self._last_result_lines:
             self._render_result(view_model.result_lines)
             self._last_result_lines = view_model.result_lines
+
+        if view_model.log_lines != self._last_log_lines:
+            self._render_logs_list(view_model.log_lines)
+            self._last_log_lines = view_model.log_lines
 
         if view_model.face_selector_labels != self._last_face_selector_values:
             self._face_selector_menu.configure(
@@ -861,6 +898,46 @@ class MainWindow(ctk.CTk):
         self._result_primary_label.configure(text=rendered_primary)
         self._result_detail_label.configure(text=rendered_detail)
 
+    def _render_logs_list(self, log_lines: tuple[str, ...]) -> None:
+        for child in self._log_list.winfo_children():
+            child.destroy()
+
+        if len(log_lines) == 0:
+            log_lines = ("まだ履歴はありません。",)
+
+        for row_index, line in enumerate(log_lines):
+            timestamp_text, message_text = self._parse_log_line(line)
+
+            item_frame = ctk.CTkFrame(
+                self._log_list,
+                fg_color=CARD_BG,
+                border_width=1,
+                border_color=BORDER_SOFT,
+                corner_radius=10,
+            )
+            item_frame.grid(row=row_index, column=0, sticky="ew", padx=8, pady=6)
+            item_frame.grid_columnconfigure(0, weight=1)
+
+            timestamp_label = ctk.CTkLabel(
+                item_frame,
+                text=timestamp_text,
+                anchor="w",
+                font=self._font_small,
+                text_color=TEXT_MUTED,
+            )
+            timestamp_label.grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+
+            message_label = ctk.CTkLabel(
+                item_frame,
+                text=message_text,
+                anchor="w",
+                justify="left",
+                wraplength=300,
+                font=self._font_small,
+                text_color=TEXT_PRIMARY,
+            )
+            message_label.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
+
     def _result_badge_style(self, primary_text: str) -> tuple[str, str, str]:
         if primary_text.startswith("一致:"):
             return ("一致", SUCCESS, CARD_BG)
@@ -881,6 +958,15 @@ class MainWindow(ctk.CTk):
             distance_text = primary_text.split("distance=", 1)[1].rstrip(")")
             return f"distance {distance_text}"
         return ""
+
+    def _parse_log_line(self, line: str) -> tuple[str, str]:
+        if line == "まだ履歴はありません。":
+            return ("履歴なし", "操作するとここに記録されます。")
+
+        parts = line.split("|", 1)
+        if len(parts) != 2:
+            return ("履歴", line)
+        return (parts[0].strip(), parts[1].strip())
 
     def _fit_preview_image(self, image: Image.Image) -> Image.Image:
         max_width = max(480, self._preview_label.winfo_width() - 24)
