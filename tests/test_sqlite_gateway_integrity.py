@@ -25,6 +25,7 @@ from app.gateways.sqlite_gateway import (
     load_people,
 )
 from app.infra.app_paths import AppPaths
+from app.infra.encoding_protection import PROTECTED_ENCODING_BLOB_PREFIX
 
 
 def test_insert_person_with_encodings_rolls_back_on_encoding_failure(
@@ -118,6 +119,27 @@ def test_delete_person_cascades_to_face_encodings(tmp_path: Path) -> None:
     assert _count_rows(paths, "face_encodings") == 0
 
 
+def test_insert_person_with_encodings_stores_protected_blob(tmp_path: Path) -> None:
+    paths = _build_paths(tmp_path)
+    init_result = initialize_database(paths)
+    assert not is_failure(init_result)
+
+    person = _registered_person("alice")
+    insert_result = insert_person_with_encodings(paths, person)
+    assert not is_failure(insert_result)
+
+    with _raw_connection(paths) as connection:
+        row = connection.execute(
+            "SELECT encoding_blob FROM face_encodings WHERE person_id = ?",
+            (person.person_id.value,),
+        ).fetchone()
+
+    assert row is not None
+    encoding_blob = row[0]
+    assert isinstance(encoding_blob, bytes)
+    assert encoding_blob.startswith(PROTECTED_ENCODING_BLOB_PREFIX)
+
+
 def test_experiment_trial_cascades_when_session_is_deleted(tmp_path: Path) -> None:
     paths = _build_paths(tmp_path)
     init_result = initialize_database(paths)
@@ -203,6 +225,14 @@ def test_initialize_database_repairs_legacy_orphans(tmp_path: Path) -> None:
     assert not is_failure(init_result)
     assert _count_rows(paths, "persons") == 1
     assert _count_rows(paths, "face_encodings") == 1
+    with _raw_connection(paths) as connection:
+        row = connection.execute(
+            "SELECT encoding_blob FROM face_encodings WHERE encoding_id = 'encoding-valid'"
+        ).fetchone()
+    assert row is not None
+    migrated_blob = row[0]
+    assert isinstance(migrated_blob, bytes)
+    assert migrated_blob.startswith(PROTECTED_ENCODING_BLOB_PREFIX)
 
     people_result = load_people(paths)
     assert not is_failure(people_result)

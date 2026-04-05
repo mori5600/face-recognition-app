@@ -26,9 +26,11 @@ from app.domain.states import ExperimentState, LogState, PeopleState
 from app.domain.statuses import ExperimentStatus
 from app.domain.value_objects import DisplayName, Distance, FaceEncoding, Timestamp
 from app.infra.app_paths import AppPaths
+from app.infra.encoding_protection import default_encoding_protector
 
 LOG_RETENTION_LIMIT = 5000
 type SqliteRow = tuple[object, ...]
+_ENCODING_PROTECTOR = default_encoding_protector()
 
 FACE_ENCODINGS_TABLE_SQL = """
 CREATE TABLE face_encodings (
@@ -246,6 +248,39 @@ def _cleanup_orphan_rows(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_plaintext_face_encodings(connection: sqlite3.Connection) -> None:
+    encoding_rows = connection.execute(
+        """
+        SELECT encoding_id, encoding_blob
+        FROM face_encodings
+        """
+    ).fetchall()
+    for encoding_id, encoding_blob in encoding_rows:
+        blob_result = _coerce_blob_bytes(
+            encoding_blob,
+            context=f"face encoding {encoding_id}",
+        )
+        if is_failure(blob_result):
+            raise sqlite3.IntegrityError(blob_result.message)
+        blob_bytes = unwrap_success(blob_result)
+        if _ENCODING_PROTECTOR.is_protected(blob_bytes):
+            continue
+        protected_result = _protect_encoding_bytes(blob_bytes)
+        if is_failure(protected_result):
+            raise sqlite3.IntegrityError(protected_result.message)
+        connection.execute(
+            """
+            UPDATE face_encodings
+            SET encoding_blob = ?
+            WHERE encoding_id = ?
+            """,
+            (
+                sqlite3.Binary(unwrap_success(protected_result)),
+                str(encoding_id),
+            ),
+        )
+
+
 def _migrate_schema(connection: sqlite3.Connection) -> None:
     requires_rebuild = (
         _requires_face_encodings_rebuild(connection)
@@ -264,6 +299,7 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
             if _requires_experiment_trials_rebuild(connection):
                 _rebuild_experiment_trials_table(connection)
             _cleanup_orphan_rows(connection)
+            _migrate_plaintext_face_encodings(connection)
             connection.execute("COMMIT")
         except sqlite3.Error:
             connection.execute("ROLLBACK")
@@ -273,6 +309,7 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
         return
 
     _cleanup_orphan_rows(connection)
+    _migrate_plaintext_face_encodings(connection)
 
 
 def _insert_person_row(
@@ -299,6 +336,11 @@ def _insert_encoding_row(
     encoding: FaceEncoding,
     created_at: Timestamp,
 ) -> None:
+    protected_encoding_result = _protect_encoding_bytes(
+        encoding.value.astype(np.float32).tobytes()
+    )
+    if is_failure(protected_encoding_result):
+        raise sqlite3.IntegrityError(protected_encoding_result.message)
     connection.execute(
         """
         INSERT INTO face_encodings (encoding_id, person_id, encoding_blob, created_at)
@@ -307,7 +349,7 @@ def _insert_encoding_row(
         (
             EncodingId.new().value,
             person_id.value,
-            sqlite3.Binary(encoding.value.astype(np.float32).tobytes()),
+            sqlite3.Binary(unwrap_success(protected_encoding_result)),
             created_at.value.isoformat(),
         ),
     )
@@ -371,8 +413,17 @@ def load_people(paths: AppPaths) -> Result[PeopleState, InfraError]:
 
     encodings_by_person: dict[str, list[FaceEncoding]] = defaultdict(list)
     for person_id, encoding_blob in encoding_rows:
+        blob_result = _coerce_blob_bytes(
+            encoding_blob,
+            context=f"face encoding for person {person_id}",
+        )
+        if is_failure(blob_result):
+            return blob_result
+        raw_bytes_result = _unprotect_encoding_bytes(unwrap_success(blob_result))
+        if is_failure(raw_bytes_result):
+            return raw_bytes_result
         encoding_result = FaceEncoding.create(
-            np.frombuffer(encoding_blob, dtype=np.float32).copy()
+            np.frombuffer(unwrap_success(raw_bytes_result), dtype=np.float32).copy()
         )
         if is_failure(encoding_result):
             return Failure(
@@ -1187,3 +1238,28 @@ def _decode_experiment_trial(
             distance=distance_value,
         )
     )
+
+
+def _coerce_blob_bytes(
+    value: object,
+    context: str,
+) -> Result[bytes, InfraError]:
+    if isinstance(value, bytes):
+        return Success(value)
+    if isinstance(value, bytearray):
+        return Success(bytes(value))
+    if isinstance(value, memoryview):
+        return Success(bytes(value))
+    return Failure(
+        InfraError(f"Invalid BLOB type stored for {context}: {type(value).__name__}")
+    )
+
+
+def _protect_encoding_bytes(raw_bytes: bytes) -> Result[bytes, InfraError]:
+    return _ENCODING_PROTECTOR.protect(raw_bytes)
+
+
+def _unprotect_encoding_bytes(blob_bytes: bytes) -> Result[bytes, InfraError]:
+    if not _ENCODING_PROTECTOR.is_protected(blob_bytes):
+        return Success(blob_bytes)
+    return _ENCODING_PROTECTOR.unprotect(blob_bytes)
