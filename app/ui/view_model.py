@@ -39,6 +39,7 @@ class MainWindowViewModel:
     can_match: bool
     can_start_experiment: bool
     can_stop_experiment: bool
+    can_open_analysis_report: bool
     can_delete_person: bool
 
 
@@ -86,6 +87,7 @@ def build_main_window_view_model(
         can_match=runtime.can_target_face() and people_count > 0,
         can_start_experiment=runtime.can_start_experiment(),
         can_stop_experiment=runtime.can_stop_experiment(),
+        can_open_analysis_report=not runtime.is_analysis_report_running(),
         can_delete_person=people_count > 0,
     )
 

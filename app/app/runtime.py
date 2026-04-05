@@ -3,7 +3,11 @@ from dataclasses import replace
 
 import numpy as np
 
-from app.app.analysis_report import write_analysis_report
+from app.app.analysis_tasks import (
+    AnalysisReportCoordinator,
+    AnalysisReportCoordinatorProtocol,
+)
+from app.app.registration_service import persist_registration
 from app.domain.entities import DetectedFace, MatchResult, RegisteredPerson
 from app.domain.errors import AppError, DomainError
 from app.domain.experiments import (
@@ -63,16 +67,13 @@ from app.gateways.liveness_gateway import (
 from app.gateways.sqlite_gateway import (
     delete_person,
     initialize_database,
-    insert_encoding,
     insert_experiment_session,
     insert_experiment_trial,
     insert_log,
-    insert_person,
     load_latest_experiment,
     load_people,
     load_recent_logs,
     update_experiment_session_status,
-    update_person_updated_at,
 )
 from app.infra.app_paths import AppPaths
 from app.infra.cv2_compat import (
@@ -82,7 +83,11 @@ from app.infra.cv2_compat import (
     draw_rectangle,
     put_text,
 )
-from app.infra.download_models import MODEL_SOURCES, download_models
+from app.infra.download_models import (
+    MODEL_SOURCES,
+    download_models,
+    model_file_is_ready,
+)
 from app.strategy.experiment import (
     ExperimentTrialAssessment,
     assess_experiment_trial,
@@ -137,10 +142,14 @@ class FaceRecognitionRuntime:
         face_engine: OpenCvFaceEngine,
         liveness_engine: MediaPipeLivenessEngine,
         initial_state: AppState,
+        analysis_report_coordinator: AnalysisReportCoordinatorProtocol | None = None,
     ) -> None:
         self._paths = paths
         self._face_engine = face_engine
         self._liveness_engine = liveness_engine
+        self._analysis_report_coordinator = (
+            analysis_report_coordinator or AnalysisReportCoordinator(paths)
+        )
         self._state = initial_state
         self._camera_handle: CameraHandle | None = None
         self._face_selector_key = "single"
@@ -513,76 +522,31 @@ class FaceRecognitionRuntime:
             return Failure(AppError(liveness_result.message))
 
         now = Timestamp.now()
-        existing_person = self._find_person_by_name(display_name.value)
-        if existing_person is None:
-            person = RegisteredPerson(
-                person_id=PersonId.new(),
-                display_name=display_name,
-                encodings=(selected_face.encoding,),
-                created_at=now,
-                updated_at=now,
-            )
-            insert_person_result = insert_person(self._paths, person)
-            if is_failure(insert_person_result):
-                return self._registration_failure(insert_person_result.message)
-
-            insert_encoding_result = insert_encoding(
-                self._paths, person.person_id, selected_face.encoding, now
-            )
-            if is_failure(insert_encoding_result):
-                return self._registration_failure(insert_encoding_result.message)
-
-            self._state = replace(
-                self._state,
-                people=PeopleState(persons=(*self._state.people.persons, person)),
-                registration=RegistrationState(
-                    draft_name=display_name.value,
-                    status=RegistrationStatus.SUCCESS,
-                    last_registered_person_id=person.person_id,
-                    last_error=None,
-                ),
-                liveness=_idle_liveness_state(),
-                ui=replace(
-                    self._state.ui,
-                    message=f"{person.display_name.value} さんを新規登録しました。",
-                    selected_person_id=person.person_id,
-                ),
-            )
-            self._record_log(
-                AppLogLevel.INFO,
-                AppLogEvent.PERSON_REGISTERED,
-                f"{person.display_name.value} さんを新規登録しました。",
-                person_id=person.person_id,
-                person_name=person.display_name.value,
-            )
-            return Success(self._state)
-
-        insert_encoding_result = insert_encoding(
-            self._paths, existing_person.person_id, selected_face.encoding, now
+        persist_result = persist_registration(
+            self._paths,
+            self._state.people.persons,
+            display_name,
+            selected_face.encoding,
+            now,
         )
-        if is_failure(insert_encoding_result):
-            return self._registration_failure(insert_encoding_result.message)
+        if is_failure(persist_result):
+            return self._registration_failure(persist_result.message)
 
-        update_person_result = update_person_updated_at(
-            self._paths, existing_person.person_id, now
+        registration_result = unwrap_success(persist_result)
+        updated_person = registration_result.updated_person
+        message = (
+            f"{updated_person.display_name.value} さんを新規登録しました。"
+            if registration_result.created
+            else f"{updated_person.display_name.value} さんに特徴量を追加しました。"
         )
-        if is_failure(update_person_result):
-            return self._registration_failure(update_person_result.message)
-
-        updated_person = RegisteredPerson(
-            person_id=existing_person.person_id,
-            display_name=existing_person.display_name,
-            encodings=(*existing_person.encodings, selected_face.encoding),
-            created_at=existing_person.created_at,
-            updated_at=now,
-        )
-        updated_people = tuple(
-            updated_person if person.person_id == updated_person.person_id else person
-            for person in self._state.people.persons
+        log_event = (
+            AppLogEvent.PERSON_REGISTERED
+            if registration_result.created
+            else AppLogEvent.PERSON_UPDATED
         )
         self._state = replace(
             self._state,
-            people=PeopleState(persons=updated_people),
+            people=PeopleState(persons=registration_result.people),
             registration=RegistrationState(
                 draft_name=display_name.value,
                 status=RegistrationStatus.SUCCESS,
@@ -592,14 +556,14 @@ class FaceRecognitionRuntime:
             liveness=_idle_liveness_state(),
             ui=replace(
                 self._state.ui,
-                message=f"{updated_person.display_name.value} さんに特徴量を追加しました。",
+                message=message,
                 selected_person_id=updated_person.person_id,
             ),
         )
         self._record_log(
             AppLogLevel.INFO,
-            AppLogEvent.PERSON_UPDATED,
-            f"{updated_person.display_name.value} さんに特徴量を追加しました。",
+            log_event,
+            message,
             person_id=updated_person.person_id,
             person_name=updated_person.display_name.value,
         )
@@ -1088,15 +1052,36 @@ class FaceRecognitionRuntime:
         return Failure(AppError(f"Unknown person label: {label}"))
 
     def open_analysis_report(self) -> Result[AppState, AppError]:
-        report_result = write_analysis_report(self._paths, open_in_browser=True)
-        if is_failure(report_result):
+        start_result = self._analysis_report_coordinator.start()
+        if is_failure(start_result):
             self._state = replace(
                 self._state,
-                ui=replace(self._state.ui, message=report_result.message),
+                ui=replace(self._state.ui, message=start_result.message),
             )
-            return Failure(AppError(report_result.message))
+            return Failure(AppError(start_result.message))
 
-        report_path = unwrap_success(report_result)
+        self._state = replace(
+            self._state,
+            ui=replace(
+                self._state.ui,
+                message="解析レポートを生成しています。",
+            ),
+        )
+        return Success(self._state)
+
+    def poll_background_tasks(self) -> Result[AppState, AppError]:
+        poll_result = self._analysis_report_coordinator.poll()
+        if is_failure(poll_result):
+            self._state = replace(
+                self._state,
+                ui=replace(self._state.ui, message=poll_result.message),
+            )
+            return Failure(AppError(poll_result.message))
+
+        report_path = unwrap_success(poll_result)
+        if report_path is None:
+            return Success(self._state)
+
         self._state = replace(
             self._state,
             ui=replace(
@@ -1105,6 +1090,9 @@ class FaceRecognitionRuntime:
             ),
         )
         return Success(self._state)
+
+    def is_analysis_report_running(self) -> bool:
+        return self._analysis_report_coordinator.is_running()
 
     def _registration_failure(self, message: str) -> Result[AppState, AppError]:
         self._state = replace(
@@ -1323,12 +1311,6 @@ class FaceRecognitionRuntime:
             distance=candidate.distance,
         )
 
-    def _find_person_by_name(self, display_name: str) -> RegisteredPerson | None:
-        for person in self._state.people.persons:
-            if person.display_name.value == display_name:
-                return person
-        return None
-
     def _frame_size(self) -> tuple[int, int] | None:
         frame = self._state.camera.latest_frame
         if frame is None:
@@ -1535,19 +1517,14 @@ class FaceRecognitionRuntime:
 
 
 def _models_need_download(paths: AppPaths) -> bool:
-    file_sizes = {
-        paths.yunet_model_path.name: paths.yunet_model_path.stat().st_size
-        if paths.yunet_model_path.exists()
-        else -1,
-        paths.sface_model_path.name: paths.sface_model_path.stat().st_size
-        if paths.sface_model_path.exists()
-        else -1,
-        paths.mediapipe_face_landmarker_path.name: paths.mediapipe_face_landmarker_path.stat().st_size
-        if paths.mediapipe_face_landmarker_path.exists()
-        else -1,
+    file_paths = {
+        paths.yunet_model_path.name: paths.yunet_model_path,
+        paths.sface_model_path.name: paths.sface_model_path,
+        paths.mediapipe_face_landmarker_path.name: paths.mediapipe_face_landmarker_path,
     }
     for file_name, source in MODEL_SOURCES.items():
-        if file_sizes.get(file_name) != source.expected_size:
+        model_path = file_paths.get(file_name)
+        if model_path is None or not model_file_is_ready(model_path, source):
             return True
     return False
 

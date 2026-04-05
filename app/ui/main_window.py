@@ -25,10 +25,10 @@ CARD_BG = "#ffffff"
 CARD_ALT_BG = "#f8f9fb"
 TEXT_PRIMARY = "#333333"
 TEXT_MUTED = "#5f6874"
-ACCENT = "#0017c1"
-ACCENT_HOVER = "#00118f"
-ACCENT_ACTIVE = "#000060"
-ACCENT_SOFT = "#eef3ff"
+ACCENT = "#2F9E7A"
+ACCENT_HOVER = "#268768"
+ACCENT_ACTIVE = "#1E6E55"
+ACCENT_SOFT = "#E8F6F0"
 PREVIEW_BG = "#111827"
 PREVIEW_TEXT = "#f8fafc"
 BORDER = "#000000"
@@ -112,6 +112,7 @@ class MainWindow(ctk.CTk):
         self._last_match_enabled = None
         self._last_experiment_start_enabled = None
         self._last_experiment_stop_enabled = None
+        self._last_analysis_enabled = None
         self._last_delete_enabled = None
 
         runtime_result = FaceRecognitionRuntime.bootstrap()
@@ -786,11 +787,10 @@ class MainWindow(ctk.CTk):
         self._tick_after_id = self.after(100, self._tick)
 
     def _tick(self) -> None:
-        if (
-            self._runtime is not None
-            and self._runtime.state.camera.status == CameraStatus.RUNNING
-        ):
-            self._runtime.update_frame()
+        if self._runtime is not None:
+            self._runtime.poll_background_tasks()
+            if self._runtime.state.camera.status == CameraStatus.RUNNING:
+                self._runtime.update_frame()
         self._refresh_view()
         self._schedule_tick()
 
@@ -937,6 +937,11 @@ class MainWindow(ctk.CTk):
                 state="normal" if view_model.can_stop_experiment else "disabled"
             )
             self._last_experiment_stop_enabled = view_model.can_stop_experiment
+        if view_model.can_open_analysis_report != self._last_analysis_enabled:
+            self._analysis_button.configure(
+                state="normal" if view_model.can_open_analysis_report else "disabled"
+            )
+            self._last_analysis_enabled = view_model.can_open_analysis_report
         if view_model.can_delete_person != self._last_delete_enabled:
             self._delete_person_button.configure(
                 state="normal" if view_model.can_delete_person else "disabled"

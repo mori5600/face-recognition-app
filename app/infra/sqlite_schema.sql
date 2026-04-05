@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS face_encodings (
     person_id TEXT NOT NULL,
     encoding_blob BLOB NOT NULL,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (person_id) REFERENCES persons (person_id)
+    FOREIGN KEY (person_id) REFERENCES persons (person_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS event_logs (
@@ -37,8 +37,7 @@ CREATE TABLE IF NOT EXISTS experiment_sessions (
     target_person_name TEXT NOT NULL,
     face_selector_key TEXT NOT NULL,
     matching_mode_key TEXT NOT NULL,
-    threshold REAL NOT NULL,
-    FOREIGN KEY (target_person_id) REFERENCES persons (person_id)
+    threshold REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS experiment_trials (
@@ -51,7 +50,7 @@ CREATE TABLE IF NOT EXISTS experiment_trials (
     candidate_person_id TEXT,
     candidate_person_name TEXT,
     distance REAL,
-    FOREIGN KEY (session_id) REFERENCES experiment_sessions (session_id)
+    FOREIGN KEY (session_id) REFERENCES experiment_sessions (session_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_experiment_sessions_started_at

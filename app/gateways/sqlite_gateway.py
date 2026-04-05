@@ -28,6 +28,308 @@ from app.domain.value_objects import DisplayName, Distance, FaceEncoding, Timest
 from app.infra.app_paths import AppPaths
 
 LOG_RETENTION_LIMIT = 5000
+type SqliteRow = tuple[object, ...]
+
+FACE_ENCODINGS_TABLE_SQL = """
+CREATE TABLE face_encodings (
+    encoding_id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    encoding_blob BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (person_id) REFERENCES persons (person_id) ON DELETE CASCADE
+)
+"""
+
+EXPERIMENT_SESSIONS_TABLE_SQL = """
+CREATE TABLE experiment_sessions (
+    session_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    scenario TEXT NOT NULL,
+    target_person_id TEXT NOT NULL,
+    target_person_name TEXT NOT NULL,
+    face_selector_key TEXT NOT NULL,
+    matching_mode_key TEXT NOT NULL,
+    threshold REAL NOT NULL
+)
+"""
+
+EXPERIMENT_TRIALS_TABLE_SQL = """
+CREATE TABLE experiment_trials (
+    trial_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    matched INTEGER NOT NULL,
+    accepted_as_target INTEGER NOT NULL,
+    success INTEGER NOT NULL,
+    candidate_person_id TEXT,
+    candidate_person_name TEXT,
+    distance REAL,
+    FOREIGN KEY (session_id) REFERENCES experiment_sessions (session_id) ON DELETE CASCADE
+)
+"""
+
+EXPERIMENT_SESSIONS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_experiment_sessions_started_at
+ON experiment_sessions (started_at DESC)
+"""
+
+EXPERIMENT_TRIALS_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_experiment_trials_session_created_at
+ON experiment_trials (session_id, created_at ASC)
+"""
+
+
+def _open_connection(paths: AppPaths) -> sqlite3.Connection:
+    connection = sqlite3.connect(paths.database_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _foreign_keys(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> tuple[tuple[str, str, str], ...]:
+    rows = connection.execute(f"PRAGMA foreign_key_list({table_name})").fetchall()
+    foreign_keys: list[tuple[str, str, str]] = []
+    for row in rows:
+        foreign_keys.append((str(row[2]), str(row[3]), str(row[6]).upper()))
+    return tuple(foreign_keys)
+
+
+def _requires_face_encodings_rebuild(connection: sqlite3.Connection) -> bool:
+    return _foreign_keys(connection, "face_encodings") != (
+        ("persons", "person_id", "CASCADE"),
+    )
+
+
+def _requires_experiment_sessions_rebuild(connection: sqlite3.Connection) -> bool:
+    return len(_foreign_keys(connection, "experiment_sessions")) > 0
+
+
+def _requires_experiment_trials_rebuild(connection: sqlite3.Connection) -> bool:
+    return _foreign_keys(connection, "experiment_trials") != (
+        ("experiment_sessions", "session_id", "CASCADE"),
+    )
+
+
+def _rebuild_face_encodings_table(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE face_encodings RENAME TO face_encodings_legacy")
+    connection.execute(FACE_ENCODINGS_TABLE_SQL)
+    connection.execute(
+        """
+        INSERT INTO face_encodings (encoding_id, person_id, encoding_blob, created_at)
+        SELECT
+            legacy.encoding_id,
+            legacy.person_id,
+            legacy.encoding_blob,
+            legacy.created_at
+        FROM face_encodings_legacy AS legacy
+        WHERE EXISTS (
+            SELECT 1
+            FROM persons
+            WHERE persons.person_id = legacy.person_id
+        )
+        """
+    )
+    connection.execute("DROP TABLE face_encodings_legacy")
+
+
+def _rebuild_experiment_sessions_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "ALTER TABLE experiment_sessions RENAME TO experiment_sessions_legacy"
+    )
+    connection.execute(EXPERIMENT_SESSIONS_TABLE_SQL)
+    connection.execute(
+        """
+        INSERT INTO experiment_sessions (
+            session_id,
+            started_at,
+            completed_at,
+            status,
+            scenario,
+            target_person_id,
+            target_person_name,
+            face_selector_key,
+            matching_mode_key,
+            threshold
+        )
+        SELECT
+            session_id,
+            started_at,
+            completed_at,
+            status,
+            scenario,
+            target_person_id,
+            target_person_name,
+            face_selector_key,
+            matching_mode_key,
+            threshold
+        FROM experiment_sessions_legacy
+        """
+    )
+    connection.execute("DROP TABLE experiment_sessions_legacy")
+    connection.execute(EXPERIMENT_SESSIONS_INDEX_SQL)
+
+
+def _rebuild_experiment_trials_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "ALTER TABLE experiment_trials RENAME TO experiment_trials_legacy"
+    )
+    connection.execute(EXPERIMENT_TRIALS_TABLE_SQL)
+    connection.execute(
+        """
+        INSERT INTO experiment_trials (
+            trial_id,
+            session_id,
+            created_at,
+            matched,
+            accepted_as_target,
+            success,
+            candidate_person_id,
+            candidate_person_name,
+            distance
+        )
+        SELECT
+            legacy.trial_id,
+            legacy.session_id,
+            legacy.created_at,
+            legacy.matched,
+            legacy.accepted_as_target,
+            legacy.success,
+            legacy.candidate_person_id,
+            legacy.candidate_person_name,
+            legacy.distance
+        FROM experiment_trials_legacy AS legacy
+        WHERE EXISTS (
+            SELECT 1
+            FROM experiment_sessions
+            WHERE experiment_sessions.session_id = legacy.session_id
+        )
+        """
+    )
+    connection.execute("DROP TABLE experiment_trials_legacy")
+    connection.execute(EXPERIMENT_TRIALS_INDEX_SQL)
+
+
+def _cleanup_orphan_rows(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        DELETE FROM face_encodings
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM persons
+            WHERE persons.person_id = face_encodings.person_id
+        )
+        """
+    )
+    connection.execute(
+        """
+        DELETE FROM experiment_trials
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM experiment_sessions
+            WHERE experiment_sessions.session_id = experiment_trials.session_id
+        )
+        """
+    )
+    connection.execute(
+        """
+        DELETE FROM persons
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM face_encodings
+            WHERE face_encodings.person_id = persons.person_id
+        )
+        """
+    )
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    requires_rebuild = (
+        _requires_face_encodings_rebuild(connection)
+        or _requires_experiment_sessions_rebuild(connection)
+        or _requires_experiment_trials_rebuild(connection)
+    )
+
+    if requires_rebuild:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("BEGIN")
+            if _requires_face_encodings_rebuild(connection):
+                _rebuild_face_encodings_table(connection)
+            if _requires_experiment_sessions_rebuild(connection):
+                _rebuild_experiment_sessions_table(connection)
+            if _requires_experiment_trials_rebuild(connection):
+                _rebuild_experiment_trials_table(connection)
+            _cleanup_orphan_rows(connection)
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
+        return
+
+    _cleanup_orphan_rows(connection)
+
+
+def _insert_person_row(
+    connection: sqlite3.Connection,
+    person: RegisteredPerson,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO persons (person_id, display_name, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            person.person_id.value,
+            person.display_name.value,
+            person.created_at.value.isoformat(),
+            person.updated_at.value.isoformat(),
+        ),
+    )
+
+
+def _insert_encoding_row(
+    connection: sqlite3.Connection,
+    person_id: PersonId,
+    encoding: FaceEncoding,
+    created_at: Timestamp,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO face_encodings (encoding_id, person_id, encoding_blob, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            EncodingId.new().value,
+            person_id.value,
+            sqlite3.Binary(encoding.value.astype(np.float32).tobytes()),
+            created_at.value.isoformat(),
+        ),
+    )
+
+
+def _update_person_timestamp_row(
+    connection: sqlite3.Connection,
+    person_id: PersonId,
+    updated_at: Timestamp,
+) -> None:
+    cursor = connection.execute(
+        """
+        UPDATE persons
+        SET updated_at = ?
+        WHERE person_id = ?
+        """,
+        (updated_at.value.isoformat(), person_id.value),
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.IntegrityError(
+            f"Unknown person_id referenced while updating timestamp: {person_id.value}"
+        )
 
 
 def initialize_database(paths: AppPaths) -> Result[None, InfraError]:
@@ -35,8 +337,9 @@ def initialize_database(paths: AppPaths) -> Result[None, InfraError]:
 
     try:
         schema = paths.sqlite_schema_path.read_text(encoding="utf-8")
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             connection.executescript(schema)
+            _migrate_schema(connection)
             connection.commit()
     except OSError as exc:
         return Failure(InfraError(f"Failed to read the SQLite schema: {exc}"))
@@ -48,7 +351,7 @@ def initialize_database(paths: AppPaths) -> Result[None, InfraError]:
 
 def load_people(paths: AppPaths) -> Result[PeopleState, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             person_rows = connection.execute(
                 """
                 SELECT person_id, display_name, created_at, updated_at
@@ -110,7 +413,11 @@ def load_people(paths: AppPaths) -> Result[PeopleState, InfraError]:
 
         encodings = tuple(encodings_by_person.get(person_id, []))
         if len(encodings) == 0:
-            continue
+            return Failure(
+                InfraError(
+                    f"Person {person_id} has no face encodings stored. Run initialize_database() to repair the database."
+                )
+            )
 
         persons.append(
             RegisteredPerson(
@@ -130,7 +437,7 @@ def load_recent_logs(
     limit: int = 50,
 ) -> Result[LogState, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             log_rows = connection.execute(
                 """
                 SELECT log_id, created_at, level, event_type, message, person_id, person_name, distance
@@ -160,7 +467,7 @@ def load_analysis_snapshot(paths: AppPaths) -> Result[AnalysisSnapshot, InfraErr
     people_state = unwrap_success(people_result)
 
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             log_rows = connection.execute(
                 """
                 SELECT log_id, created_at, level, event_type, message, person_id, person_name, distance
@@ -240,7 +547,7 @@ def load_analysis_snapshot(paths: AppPaths) -> Result[AnalysisSnapshot, InfraErr
 
 def load_analysis_fingerprint(paths: AppPaths) -> Result[str, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             row = connection.execute(
                 """
                 SELECT
@@ -272,7 +579,7 @@ def load_analysis_fingerprint(paths: AppPaths) -> Result[str, InfraError]:
 
 def load_latest_experiment(paths: AppPaths) -> Result[ExperimentState, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             session_row = connection.execute(
                 """
                 SELECT
@@ -353,19 +660,8 @@ def insert_person(
     paths: AppPaths, person: RegisteredPerson
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO persons (person_id, display_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    person.person_id.value,
-                    person.display_name.value,
-                    person.created_at.value.isoformat(),
-                    person.updated_at.value.isoformat(),
-                ),
-            )
+        with closing(_open_connection(paths)) as connection:
+            _insert_person_row(connection, person)
             connection.commit()
     except sqlite3.Error as exc:
         return Failure(InfraError(f"Failed to insert a person into SQLite: {exc}"))
@@ -373,9 +669,32 @@ def insert_person(
     return Success(None)
 
 
+def insert_person_with_encodings(
+    paths: AppPaths,
+    person: RegisteredPerson,
+) -> Result[None, InfraError]:
+    try:
+        with closing(_open_connection(paths)) as connection:
+            _insert_person_row(connection, person)
+            for encoding in person.encodings:
+                _insert_encoding_row(
+                    connection,
+                    person.person_id,
+                    encoding,
+                    person.created_at,
+                )
+            connection.commit()
+    except sqlite3.Error as exc:
+        return Failure(
+            InfraError(f"Failed to insert a person with encodings into SQLite: {exc}")
+        )
+
+    return Success(None)
+
+
 def insert_log(paths: AppPaths, entry: AppLogEntry) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             connection.execute(
                 """
                 INSERT INTO event_logs (
@@ -426,7 +745,7 @@ def insert_experiment_session(
     status: ExperimentStatus,
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             connection.execute(
                 """
                 INSERT INTO experiment_sessions (
@@ -476,7 +795,7 @@ def update_experiment_session_status(
     completed_at: Timestamp | None,
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             connection.execute(
                 """
                 UPDATE experiment_sessions
@@ -505,7 +824,7 @@ def insert_experiment_trial(
     trial: ExperimentTrial,
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
+        with closing(_open_connection(paths)) as connection:
             connection.execute(
                 """
                 INSERT INTO experiment_trials (
@@ -550,15 +869,8 @@ def update_person_updated_at(
     paths: AppPaths, person_id: PersonId, updated_at: Timestamp
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
-            connection.execute(
-                """
-                UPDATE persons
-                SET updated_at = ?
-                WHERE person_id = ?
-                """,
-                (updated_at.value.isoformat(), person_id.value),
-            )
+        with closing(_open_connection(paths)) as connection:
+            _update_person_timestamp_row(connection, person_id, updated_at)
             connection.commit()
     except sqlite3.Error as exc:
         return Failure(
@@ -575,19 +887,8 @@ def insert_encoding(
     created_at: Timestamp,
 ) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
-            connection.execute(
-                """
-                INSERT INTO face_encodings (encoding_id, person_id, encoding_blob, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    EncodingId.new().value,
-                    person_id.value,
-                    sqlite3.Binary(encoding.value.astype(np.float32).tobytes()),
-                    created_at.value.isoformat(),
-                ),
-            )
+        with closing(_open_connection(paths)) as connection:
+            _insert_encoding_row(connection, person_id, encoding, created_at)
             connection.commit()
     except sqlite3.Error as exc:
         return Failure(
@@ -597,16 +898,30 @@ def insert_encoding(
     return Success(None)
 
 
+def append_encoding_to_person(
+    paths: AppPaths,
+    person_id: PersonId,
+    encoding: FaceEncoding,
+    updated_at: Timestamp,
+) -> Result[None, InfraError]:
+    try:
+        with closing(_open_connection(paths)) as connection:
+            _insert_encoding_row(connection, person_id, encoding, updated_at)
+            _update_person_timestamp_row(connection, person_id, updated_at)
+            connection.commit()
+    except sqlite3.Error as exc:
+        return Failure(
+            InfraError(
+                f"Failed to append a face encoding to the person in SQLite: {exc}"
+            )
+        )
+
+    return Success(None)
+
+
 def delete_person(paths: AppPaths, person_id: PersonId) -> Result[None, InfraError]:
     try:
-        with closing(sqlite3.connect(paths.database_path)) as connection:
-            connection.execute(
-                """
-                DELETE FROM face_encodings
-                WHERE person_id = ?
-                """,
-                (person_id.value,),
-            )
+        with closing(_open_connection(paths)) as connection:
             connection.execute(
                 """
                 DELETE FROM persons
@@ -622,7 +937,7 @@ def delete_person(paths: AppPaths, person_id: PersonId) -> Result[None, InfraErr
 
 
 def _decode_log_row(
-    row: tuple[object, ...],
+    row: SqliteRow,
 ) -> Result[AppLogEntry, InfraError]:
     (
         log_id,
@@ -681,7 +996,7 @@ def _decode_log_row(
 
 
 def _decode_analysis_session(
-    row: tuple[object, ...],
+    row: SqliteRow,
 ) -> Result[AnalysisSession, InfraError]:
     session_result = _decode_experiment_session(row)
     if is_failure(session_result):
@@ -697,7 +1012,7 @@ def _decode_analysis_session(
 
 
 def _decode_analysis_trial(
-    row: tuple[object, ...],
+    row: SqliteRow,
     sessions_by_id: dict[ExperimentSessionId, AnalysisSession],
 ) -> Result[AnalysisTrial, InfraError]:
     (
@@ -745,7 +1060,7 @@ def _decode_analysis_trial(
 
 
 def _decode_experiment_session(
-    row: tuple[object, ...],
+    row: SqliteRow,
 ) -> Result[ExperimentSession, InfraError]:
     (
         session_id,
@@ -813,7 +1128,7 @@ def _decode_experiment_session(
 
 def _decode_experiment_trial(
     session_id: ExperimentSessionId,
-    row: tuple[object, ...],
+    row: SqliteRow,
 ) -> Result[ExperimentTrial, InfraError]:
     (
         trial_id,

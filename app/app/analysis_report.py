@@ -26,12 +26,12 @@ REPORT_DIRECTORY_NAME = "reports"
 REPORT_FILE_NAME = "analysis-report.html"
 REPORT_METADATA_FILE_NAME = "analysis-report.meta.json"
 PLOTLY_BUNDLE_FILE_NAME = "plotly.min.js"
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 RECENT_SESSION_LIMIT = 8
 RECENT_LOG_LIMIT = 12
 THRESHOLD_POINT_COUNT = 25
-PRIMARY_COLOR = "#0017c1"
-PRIMARY_SOFT = "#eef3ff"
+PRIMARY_COLOR = "#2F9E7A"
+PRIMARY_SOFT = "#E8F6F0"
 SUCCESS_COLOR = "#006d3c"
 SUCCESS_SOFT = "#e8f5ee"
 DANGER_COLOR = "#9f1d1d"
@@ -978,7 +978,9 @@ def _write_cache_metadata(
 
 def _open_report(report_path: Path) -> Result[Path, AppError]:
     try:
-        webbrowser.open(report_path.resolve().as_uri())
+        opened = webbrowser.open(report_path.resolve().as_uri())
     except OSError as exc:
         return Failure(AppError(f"解析レポートを開けませんでした: {exc}"))
+    if not opened:
+        return Failure(AppError("解析レポートを開けませんでした。"))
     return Success(report_path)
