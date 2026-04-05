@@ -2,8 +2,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from app.app.analysis_report import write_analysis_report
+from app.app.analysis_report import PLOTLY_BUNDLE_FILE_NAME, write_analysis_report
 from app.domain.entities import RegisteredPerson
 from app.domain.experiments import (
     ExperimentScenario,
@@ -116,6 +117,35 @@ def test_write_analysis_report_handles_empty_database(tmp_path: Path) -> None:
     assert "評価実験の記録はまだありません。" in report_html
     assert "イベント履歴はまだありません。" in report_html
     assert "登録人物" in report_html
+
+
+def test_write_analysis_report_reuses_cached_report_when_data_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _build_paths(tmp_path)
+    init_result = initialize_database(paths)
+    assert not is_failure(init_result)
+
+    first_result = write_analysis_report(paths)
+    assert not is_failure(first_result)
+
+    report_path = unwrap_success(first_result)
+    assert report_path.exists()
+    assert (report_path.parent / PLOTLY_BUNDLE_FILE_NAME).exists()
+
+    def fail_if_snapshot_is_loaded(paths_arg: AppPaths) -> object:
+        _ = paths_arg
+        raise AssertionError("load_analysis_snapshot should not run for cached report")
+
+    monkeypatch.setattr(
+        "app.app.analysis_report.load_analysis_snapshot",
+        fail_if_snapshot_is_loaded,
+    )
+
+    second_result = write_analysis_report(paths)
+    assert not is_failure(second_result)
+    assert unwrap_success(second_result) == report_path
 
 
 def _build_paths(root_dir: Path) -> AppPaths:

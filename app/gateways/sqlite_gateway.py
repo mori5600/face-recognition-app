@@ -238,6 +238,38 @@ def load_analysis_snapshot(paths: AppPaths) -> Result[AnalysisSnapshot, InfraErr
     )
 
 
+def load_analysis_fingerprint(paths: AppPaths) -> Result[str, InfraError]:
+    try:
+        with closing(sqlite3.connect(paths.database_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM persons),
+                    (SELECT COALESCE(MAX(updated_at), '') FROM persons),
+                    (SELECT COUNT(*) FROM face_encodings),
+                    (SELECT COALESCE(MAX(created_at), '') FROM face_encodings),
+                    (SELECT COUNT(*) FROM event_logs),
+                    (SELECT COALESCE(MAX(created_at), '') FROM event_logs),
+                    (SELECT COUNT(*) FROM experiment_sessions),
+                    (
+                        SELECT COALESCE(MAX(COALESCE(completed_at, started_at)), '')
+                        FROM experiment_sessions
+                    ),
+                    (SELECT COUNT(*) FROM experiment_trials),
+                    (SELECT COALESCE(MAX(created_at), '') FROM experiment_trials)
+                """,
+            ).fetchone()
+    except sqlite3.Error as exc:
+        return Failure(
+            InfraError(f"Failed to load analysis fingerprint from SQLite: {exc}")
+        )
+
+    if row is None:
+        return Success("empty")
+
+    return Success("|".join(str(value) for value in row))
+
+
 def load_latest_experiment(paths: AppPaths) -> Result[ExperimentState, InfraError]:
     try:
         with closing(sqlite3.connect(paths.database_path)) as connection:

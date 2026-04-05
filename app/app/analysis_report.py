@@ -1,3 +1,4 @@
+import json
 import webbrowser
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -6,6 +7,7 @@ from pathlib import Path
 from statistics import fmean
 
 import plotly.graph_objects as go
+from plotly.offline.offline import get_plotlyjs
 from plotly.subplots import make_subplots
 
 from app.domain.analysis import AnalysisSession, AnalysisSnapshot, AnalysisTrial
@@ -14,11 +16,17 @@ from app.domain.experiments import ExperimentScenario
 from app.domain.logs import AppLogEntry, AppLogLevel
 from app.domain.results import Failure, Result, Success, is_failure, unwrap_success
 from app.domain.statuses import ExperimentStatus
-from app.gateways.sqlite_gateway import load_analysis_snapshot
+from app.gateways.sqlite_gateway import (
+    load_analysis_fingerprint,
+    load_analysis_snapshot,
+)
 from app.infra.app_paths import AppPaths
 
 REPORT_DIRECTORY_NAME = "reports"
 REPORT_FILE_NAME = "analysis-report.html"
+REPORT_METADATA_FILE_NAME = "analysis-report.meta.json"
+PLOTLY_BUNDLE_FILE_NAME = "plotly.min.js"
+REPORT_VERSION = 2
 RECENT_SESSION_LIMIT = 8
 RECENT_LOG_LIMIT = 12
 THRESHOLD_POINT_COUNT = 25
@@ -44,30 +52,63 @@ class TrialMetrics:
     average_distance: float | None
 
 
+@dataclass(frozen=True)
+class ReportCacheMetadata:
+    report_version: int
+    fingerprint: str
+
+
 def write_analysis_report(
     paths: AppPaths,
     open_in_browser: bool = False,
 ) -> Result[Path, AppError]:
+    report_path = paths.data_dir / REPORT_DIRECTORY_NAME / REPORT_FILE_NAME
+    report_directory = report_path.parent
+    metadata_path = report_directory / REPORT_METADATA_FILE_NAME
+    bundle_path = report_directory / PLOTLY_BUNDLE_FILE_NAME
+
+    fingerprint_result = load_analysis_fingerprint(paths)
+    if is_failure(fingerprint_result):
+        return Failure(AppError(fingerprint_result.message))
+    fingerprint = unwrap_success(fingerprint_result)
+
+    report_directory.mkdir(parents=True, exist_ok=True)
+
+    cached_metadata = _load_cache_metadata(metadata_path)
+    if (
+        cached_metadata is not None
+        and cached_metadata.report_version == REPORT_VERSION
+        and cached_metadata.fingerprint == fingerprint
+        and report_path.exists()
+        and bundle_path.exists()
+    ):
+        if open_in_browser:
+            return _open_report(report_path)
+        return Success(report_path)
+
     snapshot_result = load_analysis_snapshot(paths)
     if is_failure(snapshot_result):
         return Failure(AppError(snapshot_result.message))
     snapshot = unwrap_success(snapshot_result)
 
-    report_path = paths.data_dir / REPORT_DIRECTORY_NAME / REPORT_FILE_NAME
     try:
-        report_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_plotly_bundle(bundle_path)
         report_path.write_text(
             _build_analysis_html(snapshot, generated_at=datetime.now(UTC)),
             encoding="utf-8",
+        )
+        _write_cache_metadata(
+            metadata_path,
+            ReportCacheMetadata(
+                report_version=REPORT_VERSION,
+                fingerprint=fingerprint,
+            ),
         )
     except OSError as exc:
         return Failure(AppError(f"解析レポートの書き出しに失敗しました: {exc}"))
 
     if open_in_browser:
-        try:
-            webbrowser.open(report_path.resolve().as_uri())
-        except OSError as exc:
-            return Failure(AppError(f"解析レポートを開けませんでした: {exc}"))
+        return _open_report(report_path)
 
     return Success(report_path)
 
@@ -82,7 +123,10 @@ def _build_analysis_html(snapshot: AnalysisSnapshot, generated_at: datetime) -> 
     latest_sessions_table = _build_sessions_table(snapshot)
     recent_logs_table = _build_logs_table(snapshot.logs)
 
-    quality_html = quality_figure.to_html(full_html=False, include_plotlyjs=True)
+    quality_html = quality_figure.to_html(
+        full_html=False,
+        include_plotlyjs=PLOTLY_BUNDLE_FILE_NAME,
+    )
     operations_html = operations_figure.to_html(full_html=False, include_plotlyjs=False)
 
     return f"""<!DOCTYPE html>
@@ -891,3 +935,50 @@ def _format_distance(value: float | None) -> str:
 
 def _format_threshold(value: float) -> str:
     return f"{value:.3f}"
+
+
+def _ensure_plotly_bundle(bundle_path: Path) -> None:
+    if bundle_path.exists():
+        return
+    bundle_path.write_text(get_plotlyjs(), encoding="utf-8")
+
+
+def _load_cache_metadata(metadata_path: Path) -> ReportCacheMetadata | None:
+    if not metadata_path.exists():
+        return None
+    try:
+        raw_data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    report_version = raw_data.get("report_version")
+    fingerprint = raw_data.get("fingerprint")
+    if not isinstance(report_version, int) or not isinstance(fingerprint, str):
+        return None
+    return ReportCacheMetadata(
+        report_version=report_version,
+        fingerprint=fingerprint,
+    )
+
+
+def _write_cache_metadata(
+    metadata_path: Path,
+    metadata: ReportCacheMetadata,
+) -> None:
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "report_version": metadata.report_version,
+                "fingerprint": metadata.fingerprint,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _open_report(report_path: Path) -> Result[Path, AppError]:
+    try:
+        webbrowser.open(report_path.resolve().as_uri())
+    except OSError as exc:
+        return Failure(AppError(f"解析レポートを開けませんでした: {exc}"))
+    return Success(report_path)
