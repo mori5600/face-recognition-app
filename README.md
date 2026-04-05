@@ -51,12 +51,25 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 - `uv run ruff check .`
 - `uv run pytest`
 - `uv run python -m compileall app main.py`
+- `THIRD_PARTY_LICENSES.md` の更新確認
+
+## ライセンス
+
+- このリポジトリのソースコードは Apache License 2.0 です。
+  - [LICENSE](./LICENSE)
+- Python 依存パッケージのライセンス一覧は次にまとめています。
+  - [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md)
+- 一覧の再生成は次で行います。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\update-third-party-licenses.ps1
+```
 
 ## 現時点の制約
 
 - 既定値は `SingleFaceOnlySelector` なので、複数人が映る場合は `最大顔優先` か `中央顔優先` に切り替えてください。
 - `最大顔優先` と `中央顔優先` も選択できます。
 - `人物単位最近傍` は、同一人物の複数 encoding の平均距離で評価する実装です。
-- `FaceEncoding` は設計書に合わせて 128 次元固定です。
+- `FaceEncoding` は 128 次元固定です。
 - カメラフレームごとに顔検出と特徴抽出を行うため、PC 性能によってはプレビューが重くなります。
 - 生体確認は RGB カメラ前提の簡易 PAD です。写真には強くなりますが、厳密な本人確認を保証するものではありません。
